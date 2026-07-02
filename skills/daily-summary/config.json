@@ -1,0 +1,12 @@
+{
+  "server": {
+    "url": "{YOUR_SERVER}",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Api-Key": "Bearer YOUR_API_KEY",
+      "{OTHER_HEADER}": "YOUR CUSTOMIZE"
+    }
+  },
+  "local_output_dir": "~/Documents/WorkLogs"
+}
