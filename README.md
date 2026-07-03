@@ -19,15 +19,16 @@ SMART-DAILY-SUMMARY/
     ├── SKILL.md                # 技能描述
     ├── README.md               # 本说明文档
     ├── config.json             # 服务器配置与 Payload 模板
+    ├── .env
+    ├── requirements.txt
     └── scripts/
         └── gather_data.py      # 核心采集、解析与发送脚本
-├── .env
-└── requirements.txt
+└── README.md
 ```
 ##  安装指南
 
 ### 1. 克隆或复制文件
-将本仓库中的 `.claude/skills/daily-summary` 目录完整复制到你的项目根目录下：
+将本仓库中的 `./daily-summary` 目录完整复制到你的项目根目录下：
 
 ```bash
 # 在你的项目根目录下执行
@@ -44,7 +45,7 @@ pip install -r requirements.txt
 ```
 
 ### 3. 配置环境变量
-在项目根目录创建 .env 文件（务必确保 .env 已加入 .gitignore）：
+在daily-summary目录创建 .env 文件（务必确保 .env 已加入 .gitignore）：
 ```text
 DAILY_SUMMARY_TOKEN=你的真实API_Token
 ```

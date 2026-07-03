@@ -8,7 +8,7 @@ from pathlib import Path
 # 1. 自动加载项目根目录的 .env 文件
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parents[3] / ".env") 
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env") 
 except ImportError:
     pass 
 
