@@ -4,7 +4,7 @@
     "method": "POST",
     "headers": {
       "Content-Type": "application/json",
-      "${Authorization}": "${DAILY_SUMMARY_TOKEN}"
+      "Authorization": "${DAILY_SUMMARY_TOKEN}"
     }
   },
   "local_output_dir": "~/Documents/worklog/",
