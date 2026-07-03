@@ -1,15 +1,16 @@
 # 🚀 Daily Summary Skil(每日工作摘要生成器)
-
-一个为 Claude Code 设计的自动化日报生成与发送工具。它能自动采集 Git 提交记录与 AI 对话日志，通过交互式问答补充“隐性工作”（如沟通、排坑），最终生成结构化 Markdown 日报，并支持本地编辑后发送或稍后发送。
+一个为 Claude Code 设计的自动化日报生成与发送工具。它将**数据采集**、**内容生成**、**审核发送**彻底解耦，支持通过斜杠指令精准控制流程，完美适配“先生成、再调整、后发送”的真实工作习惯。
 
 ## ✨ 核心特性
-- **🔄 生成/发送解耦**：日报生成后保存在本地，你可以随时修改 AI 预估的耗时/Token，再决定是否发送。
+- **🎯 指令级解耦**：
+    - /daily-summary：专注采集与生成，不阻塞、不自动发送。
+    - /daily-summary:send：一键发送最新日报，或指定历史文件发送。
 - **🧠 隐性工作捕获**：强制交互询问“沟通/卡点/知识沉淀”，避免纯代码统计遗漏关键产出。
 - **🛡️ 鲁棒性采集**：
     - 自动检测 Git 仓库，非仓库环境优雅降级。
     - 修复时间戳解析漏洞，兼容 ISO8601 及跨时区格式。
     - 增强正则解析，兼容 任务 1: / 任务一： 等多种 AI 生成变体。
-- **🚀 管道自动化**：支持 cat file | script --send 模式，非交互环境下自动跳过确认，适配 CI/CD 或快捷指令。
+- **🚀 管道自动化**：支持 `cat file | script --send` 模式，非交互环境下自动跳过确认，适配 CI/CD 或快捷指令。
 
 ## 📂 目录结构
 ```text
@@ -80,17 +81,33 @@ DAILY_SUMMARY_TOKEN=你的真实API_Token
 如果你的 Claude Code 对话日志不在默认路径 ~/.claude/projects/，请编辑 scripts/gather-data.py，修改 LOG_DIR 变量为你的实际路径。
 
 ## 🚀 快速开始
-### 1. 触发 Skill
-在 Claude Code 中输入以下任意指令：
-> "生成日报"、"总结今天工作"、"daily summary"
+### 1. 生成日报（仅采集与生成）
+在 Claude Code 中输入：
+```text
+/daily-summary
+```
+#### 执行流程：
+1. 脚本自动运行，输出今日 Git 提交与 Claude 对话摘要。
+2. AI 暂停并询问你今天的沟通、卡点、知识沉淀。
+3. 结合数据生成结构化 Markdown，保存至 ~/Documents/WorkLogs/daily-summary-YYYY-MM-DD.md。
+4. 流程结束，你可以随时在编辑器中修改 AI 预估的耗时/Token。
 
-### 2. 执行流程
-1. 数据采集：脚本自动运行，输出今日 Git 提交与 Claude 对话摘要。
-2. 灵魂三问：AI 会暂停并询问你今天的沟通、卡点、知识沉淀。
-3. 生成日报：AI 结合数据生成结构化 Markdown，并保存到 ~/Documents/WorkLogs/。
-4. 后续操作：
-    - 选择 立即发送：读取本地最新文件，解析任务块，推送到服务器。
-    - 选择 稍后发送：结束流程，稍后手动执行发送命令。
+### 2. 发送最新日报
+确认内容无误后，输入：
+在 Claude Code 中输入：
+```text
+/daily-summary:send
+```
+#### 执行流程：
+1. 自动定位 ~/Documents/WorkLogs/ 下最新的日报文件。
+2. 解析任务块，组装 Payload，推送到服务器。
+3. 反馈发送结果（成功/失败/解析错误）。
+
+### 3. 发送指定历史日报
+如果需要补发或重发某天的日报：
+```text
+/daily-summary:send ~/Documents/WorkLogs/daily-summary-2026-07-01.md
+```
 
 ## 📝 日报格式规范
 AI 生成的日报必须严格遵守以下格式，否则 --send 解析会失败：
@@ -114,9 +131,12 @@ AI 生成的日报必须严格遵守以下格式，否则 --send 解析会失败
 ## 🔧 手动发送（稍后发送模式）
 如果你选择了“稍后发送”，或者想重新发送已修改的日报：
 ```bash
-# 1. 在编辑器中修改完日报后保存
-# 2. 运行以下命令（支持管道传入）
-cat ~/Documents/WorkLogs/daily-summary-2026-07-03.md | \
+# 发送最新日报
+cat ~/Documents/WorkLogs/daily-summary-$(date +%Y-%m-%d).md | \
+python3 .claude/skills/daily-summary/scripts/gather_data.py --send
+
+# 发送指定文件
+cat ~/Documents/WorkLogs/daily-summary-2026-07-01.md | \
 python3 .claude/skills/daily-summary/scripts/gather_data.py --send
 ```
 > ⚠️ 注意：通过管道（|）触发时，脚本会自动跳过 y/n 确认环节，直接发送。
@@ -131,12 +151,15 @@ python3 .claude/skills/daily-summary/scripts/gather_data.py --send
 
 ## 🛠️ 开发/调试
 ```bash
-# 仅测试数据采集（不发送）
-python3 ./skills/daily-summary/scripts/gather_data.py
+# 仅测试数据采集（不发送，不生成文件）
+python3 .claude/skills/daily-summary/scripts/gather_data.py
 
 # 测试发送（需传入内容）
-echo "### 任务 1: [测试任务] (预估总耗时: 1小时)\n- AI 辅助耗时: 1 小时 (AI 估算)\n- Token 消耗量: 100 tokens (AI 估算)\n- 工作详情:\n  - 测试内容" | \
-python3 .claude/skills/daily-summary/scripts/gather_data.py --send
+echo "### 任务 1: [测试任务] (预估总耗时: 1小时)
+- AI 辅助耗时: 1 小时 (AI 估算)
+- Token 消耗量: 100 tokens (AI 估算)
+- 工作详情:
+  - 测试内容" | python3 .claude/skills/daily-summary/scripts/gather_data.py --send
 ```
 
 ## 贡献与反馈
