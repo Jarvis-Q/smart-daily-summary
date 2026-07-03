@@ -1,12 +1,27 @@
 {
   "server": {
-    "url": "{YOUR_SERVER}",
+    "url": "${SERVER_URL}",
     "method": "POST",
     "headers": {
       "Content-Type": "application/json",
-      "X-Api-Key": "Bearer YOUR_API_KEY",
-      "{OTHER_HEADER}": "YOUR CUSTOMIZE"
+      "${Authorization}": "${DAILY_SUMMARY_TOKEN}"
     }
   },
-  "local_output_dir": "~/Documents/WorkLogs"
+  "local_output_dir": "~/Documents/worklog/",
+  "payload_template": {
+    "workDate": "{{date}}",
+    "status": "0",
+    "remark": "备注信息",
+    "items": "{{tasks}}"
+  },
+  "task_item_template": {
+    "workCategory": "dev",
+    "workDetail": "{{content}}",
+    "workHours": "{{hours}}",
+    "aiHours": "{{ai_hours}}",
+    "tokenConsume": "{{token_consume}}",
+    "projectId": "",
+    "chandaoId": "",
+    "sortOrder": 1
+  }
 }
