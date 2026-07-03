@@ -20,7 +20,7 @@
     "workHours": "{{hours}}",
     "aiHours": "{{ai_hours}}",
     "tokenConsume": "{{token_consume}}",
-    "projectId": "1000000000000000099",
+    "projectId": "",
     "chandaoId": "",
     "sortOrder": 1
   }
