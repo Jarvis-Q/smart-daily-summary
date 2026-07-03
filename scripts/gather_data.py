@@ -1,36 +1,42 @@
 #!/usr/bin/env python3
 # .claude/skills/daily-summary/scripts/gather_data.py
+# 职责：仅负责数据采集（Git 提交 + Claude Code 对话记录），不涉及发送逻辑。
+# 发送逻辑请见同目录 send_report.py。
 
-import os, sys, json, copy, subprocess, requests, time, re
+import os, json, subprocess
 from datetime import date, datetime
 from pathlib import Path
 
-# 1. 自动加载项目根目录的 .env 文件
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env") 
-except ImportError:
-    pass 
-
 def load_config():
-    """加载配置文件"""
+    """加载配置文件（采集侧仅用于推导日报保存路径）"""
     config_path = Path(__file__).parent.parent / "config.json"
     if config_path.exists():
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
 
-def resolve_env_vars(obj):
-    """递归解析配置中的环境变量占位符"""
-    if isinstance(obj, dict): return {k: resolve_env_vars(v) for k, v in obj.items()}
-    elif isinstance(obj, list): return [resolve_env_vars(item) for item in obj]
-    elif isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
-        return os.environ.get(obj[2:-1], "")
-    return obj
+def _to_local_dt(ts_str):
+    """将 ISO8601（含 Z/UTC）时间戳转为本地时区的 datetime；失败返回 None。
+    修复原实现用 UTC 的 .date() 与本地 today 直接比较导致的跨天错桶问题。"""
+    try:
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    # astimezone() 不带参数即转换到本地系统时区
+    return ts.astimezone()
+
+def _project_name(jsonl_path):
+    """从 ~/.claude/projects/<encoded>/xxx.jsonl 的父目录名反推可读项目名。
+    目录编码将路径分隔符替换为 '-'，无法完美还原，取末段作为可读标签。"""
+    encoded = jsonl_path.parent.name
+    seg = encoded.rstrip("-").split("-")[-1]
+    return seg or encoded
 
 # ================= 数据采集模块 =================
 def get_git_commits():
-    print("##  代码提交")
+    """采集当前 Git 仓库今日的提交记录。
+    注意：git 仅覆盖当前工作目录所在仓库，Claude 对话则覆盖全部项目（见下）。"""
+    print("## 代码提交（仅当前 Git 仓库）")
     if not (Path.cwd() / ".git").exists():
         print("️ 当前目录非 Git 仓库，跳过代码采集。\n")
         return
@@ -39,159 +45,133 @@ def get_git_commits():
             ["git", "log", "--since=midnight", "--pretty=format:- %h %s (%an, %ar)", "--no-merges"],
             capture_output=True, text=True
         )
-        print(result.stdout.strip() if result.stdout.strip() else "今日暂无代码提交。\n")
-    except Exception as e: 
-        print(f"获取 Git 记录失败: {e}\n")
+        print(result.stdout.strip() if result.stdout.strip() else "今日暂无代码提交。")
+    except Exception as e:
+        print(f"获取 Git 记录失败: {e}")
+    print("")
 
 def get_claude_logs():
-    print("##  Claude Code 对话记录")
+    """采集 ~/.claude/projects 下今日的 Claude Code 对话记录。
+    按项目分组，并从 jsonl 中提取真实 token 用量与活跃时长（不再由 AI 估算）。"""
+    print("## Claude Code 对话与用量（全部项目）")
     log_dir = Path.home() / ".claude" / "projects"
     if not log_dir.exists():
         print(f"未找到 Claude Code 日志目录: {log_dir}\n")
         return
-    
+
     today = date.today()
-    extracted_logs = []
-    
+    # 按项目聚合的统计容器
+    projects = {}  # name -> {requests:[], assistant_count, in, out, cache_read, cache_creation, active_seconds}
+
     for jsonl_file in log_dir.rglob("*.jsonl"):
+        pname = _project_name(jsonl_file)
+        # 本文件（会话）今日消息的时间范围，用于估算活跃时长
+        session_first = session_last = None
+        touched = False
+        bucket = projects.setdefault(pname, {
+            "requests": [], "assistant_count": 0,
+            "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
+            "active_seconds": 0,
+        })
         try:
             with open(jsonl_file, 'r', encoding='utf-8') as f:
                 for line in f:
-                    if not line.strip(): continue
+                    if not line.strip():
+                        continue
                     try:
                         record = json.loads(line)
-                        ts_str = record.get("timestamp", "")
-                        try:
-                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                            if ts.date() != today: continue
-                        except ValueError:
-                            continue
-                            
-                        if record.get("type") in ["user", "assistant"]:
-                            role = "‍♂️ User" if record["type"] == "user" else " Claude"
-                            content = record.get("message", {}).get("content", "")
-                            if isinstance(content, list):
-                                content = " ".join([c.get("text", "") for c in content if c.get("type") == "text"])
-                            
-                            if content and "password" not in content.lower():
-                                extracted_logs.append(f"{role}: {content[:300]}...")
-                    except json.JSONDecodeError: 
+                    except json.JSONDecodeError:
                         continue
-        except Exception as e: 
+
+                    dt = _to_local_dt(record.get("timestamp", ""))
+                    if dt is None or dt.date() != today:
+                        continue
+
+                    rtype = record.get("type")
+                    if rtype not in ("user", "assistant"):
+                        continue
+
+                    touched = True
+                    if session_first is None:
+                        session_first = dt
+                    session_last = dt
+
+                    msg = record.get("message", {})
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        content = " ".join(c.get("text", "") for c in content if c.get("type") == "text")
+
+                    if rtype == "user":
+                        # 用户消息最能表达"今天做了什么"，尽量少截断地保留
+                        text = (content or "").strip()
+                        if text and not text.startswith("<"):  # 跳过工具回传/系统包裹
+                            bucket["requests"].append(text[:500])
+                    else:  # assistant：累加真实 token 用量
+                        bucket["assistant_count"] += 1
+                        usage = msg.get("usage") or {}
+                        bucket["in"] += usage.get("input_tokens", 0) or 0
+                        bucket["out"] += usage.get("output_tokens", 0) or 0
+                        bucket["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
+                        bucket["cache_creation"] += usage.get("cache_creation_input_tokens", 0) or 0
+        except Exception as e:
             print(f"读取文件 {jsonl_file} 失败: {e}")
-            
-    print("\n".join(extracted_logs[-20:]) if extracted_logs else "今日暂无 Claude Code 对话记录。")
+            continue
+
+        if touched and session_first and session_last:
+            bucket["active_seconds"] += (session_last - session_first).total_seconds()
+
+    # 仅保留今日有活动的项目
+    active = {n: b for n, b in projects.items()
+              if b["requests"] or b["assistant_count"]}
+    if not active:
+        print("今日暂无 Claude Code 对话记录。\n")
+        return
+
+    grand = {"in": 0, "out": 0, "cache_read": 0, "cache_creation": 0, "active_seconds": 0}
+    for name, b in sorted(active.items(), key=lambda kv: -kv[1]["out"]):
+        total_tokens = b["in"] + b["out"] + b["cache_read"] + b["cache_creation"]
+        hours = b["active_seconds"] / 3600
+        print(f"\n### 项目 {name}")
+        print(f"- 助手回复数: {b['assistant_count']} 条")
+        print(f"- 真实 token: 输出 {b['out']:,} / 输入 {b['in']:,} / 缓存读 {b['cache_read']:,} / 缓存写 {b['cache_creation']:,}（合计 {total_tokens:,}）")
+        print(f"- AI 活跃时长(近似): {hours:.2f} 小时（各会话时间跨度之和）")
+        if b["requests"]:
+            print("- 今日主要请求:")
+            for r in b["requests"][:25]:
+                oneline = " ".join(r.split())
+                print(f"  - {oneline[:200]}")
+        for k in ("in", "out", "cache_read", "cache_creation", "active_seconds"):
+            grand[k] += b[k]
+
+    gt = grand["in"] + grand["out"] + grand["cache_read"] + grand["cache_creation"]
+    print(f"\n### 今日总计（跨全部项目）")
+    print(f"- 真实 token 合计: {gt:,}（输出 {grand['out']:,} / 输入 {grand['in']:,} / 缓存读 {grand['cache_read']:,} / 缓存写 {grand['cache_creation']:,}）")
+    print(f"- AI 活跃时长合计(近似): {grand['active_seconds']/3600:.2f} 小时")
     print("")
 
-# ================= 解析与模板替换模块 =================
-def parse_tasks_from_markdown(markdown_content):
-    """增强版正则：兼容中英文冒号、阿拉伯数字与中文数字"""
-    pattern = r'(?=### 任务\s*[\d一二三四五六七八九十]+\s*[:：])'
-    chunks = re.split(pattern, markdown_content)
-    
-    tasks = []
-    for chunk in chunks:
-        chunk = chunk.strip()
-        if not chunk: continue
-        
-        first_line = chunk.split('\n')[0]
-        hours_match = re.search(r'预估总耗时\s*[:：]\s*([\d.]+)', first_line)
-        ai_hours_match = re.search(r'AI 辅助耗时\s*[:：]\s*([\d.]+)', chunk)
-        token_match = re.search(r'Token 消耗量\s*[:：]\s*(\d+)', chunk)
-        
-        tasks.append({
-            "hours": float(hours_match.group(1)) if hours_match else 0.0,
-            "ai_hours": float(ai_hours_match.group(1)) if ai_hours_match else 0.0,
-            "token_consume": int(token_match.group(1)) if token_match else 0,
-            "content": chunk
-        })
-    return tasks
-
-def replace_placeholders(obj, replacements):
-    """递归替换字典中的占位符 {{key}}"""
-    if isinstance(obj, dict): return {k: replace_placeholders(v, replacements) for k, v in obj.items()}
-    elif isinstance(obj, list): return [replace_placeholders(item, replacements) for item in obj]
-    elif isinstance(obj, str):
-        for key, value in replacements.items(): 
-            obj = obj.replace(f"{{{{{key}}}}}", str(value))
-        return obj
-    return obj
-
-# ================= 发送模块 =================
-def send_to_server(markdown_content):
-    """将结构化任务列表打包到 Payload 中，一次性发送到服务器"""
-    config = resolve_env_vars(load_config())
-    server_cfg = config.get("server", {})
-    url = server_cfg.get("url")
-    
-    if not url: 
-        return " 发送失败：未在 config.json 中配置 server.url"
-
-    # 1. 解析任务列表
-    tasks = parse_tasks_from_markdown(markdown_content) 
-    if not tasks:
-        return " 发送失败：未能从日报中解析出任何任务块，请检查 Markdown 格式是否符合规范。"
-
-    # 2. 组装结构化 List<Object>
-    task_item_template = config.get("task_item_template", {"content": "{{content}}"})
-    structured_tasks = [replace_placeholders(copy.deepcopy(task_item_template), task) for task in tasks]
-
-    # 3. 组装主 Payload
-    main_template = config.get("payload_template", {"tasks": "{{tasks}}"})
-    final_payload = replace_placeholders(copy.deepcopy(main_template), {
-        "tasks": structured_tasks,
-        "date": date.today().isoformat()
-    })
-
-    # 4. 发送前确认（预览）
-    print(f" 共解析到 {len(tasks)} 个独立任务，已打包至 Payload。")
-    print("️ 即将发送以下 Payload 到服务器:")
-    print(json.dumps(final_payload, indent=2, ensure_ascii=False))
-    
-    # 如果是管道传入（非交互模式），默认直接发送，避免阻塞
-    if not sys.stdin.isatty():
-        confirm = 'y'
-    else:
-        confirm = input("\n确认发送吗？(y/n): ").strip().lower()
-        
-    if confirm != 'y': 
-        return " 发送已取消。"
-
-    # 5. 执行发送（带自动重试）
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f" 正在发送 (第 {attempt} 次尝试)...")
-            response = requests.request(
-                method=server_cfg.get("method", "POST"), url=url,
-                headers=server_cfg.get("headers", {}), json=final_payload, timeout=10
-            )
-            if response.ok:
-                return f" 发送成功！状态码: {response.status_code}"
-            else:
-                print(f"️ 服务器返回异常: {response.status_code}")
-        except Exception as e:
-            print(f"️ 网络异常: {str(e)}")
-        
-        if attempt < max_retries:
-            print(" 3秒后自动重试...")
-            time.sleep(3)
-            
-    return " 发送失败：已达到最大重试次数，请检查网络或服务器配置。"
+def print_output_hint():
+    """输出确定的日报保存路径并预建目录，避免 AI 手写落盘时路径/命名出错，
+    也保证 send_report.py 的自动定位（glob daily-summary-*.md）能命中。"""
+    cfg = load_config()
+    out = cfg.get("local_output_dir")
+    if not out:
+        return
+    out = os.path.expanduser(out)
+    try:
+        os.makedirs(out, exist_ok=True)
+    except Exception as e:
+        print(f"️ 创建日报目录失败（请手动确认）：{e}")
+    fname = f"daily-summary-{date.today().isoformat()}.md"
+    print("## 日报保存位置（请严格使用此路径与文件名）")
+    print(os.path.join(out, fname))
+    print("")
 
 # ================= 主入口 =================
 def main():
-    print(f"===  今日工作数据 ===\n日期: {date.today().isoformat()}\n")
+    print(f"=== 今日工作数据 ===\n日期: {date.today().isoformat()}\n")
     get_git_commits()
     get_claude_logs()
+    print_output_hint()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--send":
-        # 支持管道读取内容，完美适配解耦后的发送逻辑
-        content = sys.stdin.read()
-        if not content.strip():
-            print(" 错误：未通过管道传入日报内容。")
-        else:
-            print(send_to_server(content))
-    else:
-        main()
+    main()
