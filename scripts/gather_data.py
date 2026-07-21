@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# .claude/skills/daily-summary/scripts/gather_data.py
+# scripts/gather_data.py
 # 职责：仅负责数据采集（Git 提交 + Claude Code 对话记录），不涉及发送逻辑。
 # 发送逻辑请见同目录 send_report.py。
 
@@ -7,8 +7,93 @@ import os, json, subprocess
 from datetime import date, datetime
 from pathlib import Path
 
+# 单次事件间隔上限（秒）：超过视为人工/异常等待（超时重试、网络重连、权限确认），截断。
+# 与 cc-usage 口径保持一致。
+MAX_GAP_S = 300.0
+
+def compute_ai_durations(events):
+    """移植自 cc-usage 的纯机器耗时口径，剔除人的阅读/输入时间。
+
+    输入：单个会话内、已按时序排列的今日事件列表，每项为
+        {"t": datetime, "typ": "user"|"assistant", "tool_use": bool, "tool_result": bool}
+    返回：(思考耗时秒, 编码耗时秒)
+        - 思考耗时 = Σ(assistant 响应 − 前一条 user/tool_result)，即模型响应延迟
+        - 编码耗时 = Σ(tool_result − 对应 tool_use assistant)，即工具执行时长
+    单次 gap 超过 MAX_GAP_S 截断；assistant 输出后到用户下一条之间的间隔（人思考）直接丢弃。
+    """
+    think_s = tool_s = 0.0
+    for prev, cur in zip(events, events[1:]):
+        gap = (cur["t"] - prev["t"]).total_seconds()
+        if gap <= 0:
+            continue
+        if gap > MAX_GAP_S:
+            gap = MAX_GAP_S
+        if prev["typ"] == "assistant" and prev["tool_use"] and cur["typ"] == "user" and cur["tool_result"]:
+            tool_s += gap
+        elif cur["typ"] == "assistant":
+            think_s += gap
+    return think_s, tool_s
+
+def discover_work_dirs(projects_root, target_date, extra_dirs=None):
+    """发现某日真正工作过的所有目录。
+
+    遍历 projects_root 下全部会话 jsonl，取 target_date（本地时区）当天
+    user/assistant 记录顶层的 cwd，去重汇总；再并入 extra_dirs（展开 ~）。
+    返回绝对路径字符串集合。不存在的 projects_root 视为无活动。
+    """
+    found = set()
+    projects_root = Path(projects_root)
+    if projects_root.exists():
+        for jsonl_file in projects_root.rglob("*.jsonl"):
+            try:
+                with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if record.get("type") not in ("user", "assistant"):
+                            continue
+                        cwd = record.get("cwd")
+                        if not cwd:
+                            continue
+                        dt = _to_local_dt(record.get("timestamp", ""))
+                        if dt is None or dt.date() != target_date:
+                            continue
+                        found.add(cwd)
+            except OSError:
+                continue
+    for d in (extra_dirs or []):
+        if d:
+            found.add(str(Path(os.path.expanduser(d))))
+    return found
+
+def resolve_repo_roots(dirs):
+    """把目录集合归一到各自的 git 仓库根并去重。
+
+    对每个目录跑 `git -C <dir> rev-parse --show-toplevel`：
+    - 成功：加入仓库根（同一仓库的多个子目录自然去重为一个）
+    - 失败（非 git 目录 / 目录不存在）：静默跳过
+    返回仓库根绝对路径字符串集合。
+    """
+    roots = set()
+    for d in dirs:
+        try:
+            result = subprocess.run(
+                ["git", "-C", d, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True
+            )
+        except OSError:
+            continue
+        top = result.stdout.strip()
+        if result.returncode == 0 and top:
+            roots.add(top)
+    return roots
+
 def load_config():
-    """加载配置文件（采集侧仅用于推导日报保存路径）"""
+    """加载配置文件（采集侧用于推导日报保存路径与 extra_git_dirs 兜底目录）"""
     config_path = Path(__file__).parent.parent / "config.json"
     if config_path.exists():
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -34,25 +119,43 @@ def _project_name(jsonl_path):
 
 # ================= 数据采集模块 =================
 def get_git_commits():
-    """采集当前 Git 仓库今日的提交记录。
-    注意：git 仅覆盖当前工作目录所在仓库，Claude 对话则覆盖全部项目（见下）。"""
-    print("## 代码提交（仅当前 Git 仓库）")
-    if not (Path.cwd() / ".git").exists():
-        print("️ 当前目录非 Git 仓库，跳过代码采集。\n")
+    """采集今日全部工作过的 Git 仓库的提交记录。
+
+    工作目录来源：今日 Claude 会话记录里的 cwd（自动发现）+ config.json 的
+    extra_git_dirs（兜底那些没走 Claude 的目录）。归一到仓库根后逐个采集，
+    一次执行即覆盖当天跨多个工程目录的工作，不再依赖当前 shell 所在目录。"""
+    print("## 代码提交（今日全部工作仓库）")
+    cfg = load_config()
+    projects_root = Path.home() / ".claude" / "projects"
+    dirs = discover_work_dirs(projects_root, date.today(), cfg.get("extra_git_dirs"))
+    repos = resolve_repo_roots(dirs)
+    if not repos:
+        print("今日未发现任何 Git 仓库工作目录。\n")
         return
-    try:
-        result = subprocess.run(
-            ["git", "log", "--since=midnight", "--pretty=format:- %h %s (%an, %ar)", "--no-merges"],
-            capture_output=True, text=True
-        )
-        print(result.stdout.strip() if result.stdout.strip() else "今日暂无代码提交。")
-    except Exception as e:
-        print(f"获取 Git 记录失败: {e}")
+    any_commit = False
+    for repo in sorted(repos):
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo, "log", "--since=midnight",
+                 "--pretty=format:- %h %s (%an, %ar)", "--no-merges"],
+                capture_output=True, text=True
+            )
+        except Exception as e:
+            print(f"\n### 仓库 {repo}\n获取 Git 记录失败: {e}")
+            continue
+        out = result.stdout.strip()
+        if out:
+            any_commit = True
+            print(f"\n### 仓库 {repo}")
+            print(out)
+    if not any_commit:
+        print("今日发现的仓库均无代码提交。")
     print("")
 
 def get_claude_logs():
     """采集 ~/.claude/projects 下今日的 Claude Code 对话记录。
-    按项目分组，并从 jsonl 中提取真实 token 用量与活跃时长（不再由 AI 估算）。"""
+    按项目分组，从 jsonl 提取真实 token 用量与 AI 机器耗时（思考+编码，
+    口径同 cc-usage，已剔除人的阅读/输入时间，不再由 AI 估算）。"""
     print("## Claude Code 对话与用量（全部项目）")
     log_dir = Path.home() / ".claude" / "projects"
     if not log_dir.exists():
@@ -61,17 +164,16 @@ def get_claude_logs():
 
     today = date.today()
     # 按项目聚合的统计容器
-    projects = {}  # name -> {requests:[], assistant_count, in, out, cache_read, cache_creation, active_seconds}
+    projects = {}  # name -> {requests, assistant_count, in, out, cache_read, cache_creation, think_seconds, tool_seconds}
 
     for jsonl_file in log_dir.rglob("*.jsonl"):
         pname = _project_name(jsonl_file)
-        # 本文件（会话）今日消息的时间范围，用于估算活跃时长
-        session_first = session_last = None
-        touched = False
+        # 本会话今日事件序列，用于按 cc-usage 口径计算思考/编码耗时
+        session_events = []
         bucket = projects.setdefault(pname, {
             "requests": [], "assistant_count": 0,
             "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
-            "active_seconds": 0,
+            "think_seconds": 0.0, "tool_seconds": 0.0,
         })
         try:
             with open(jsonl_file, 'r', encoding='utf-8') as f:
@@ -91,18 +193,23 @@ def get_claude_logs():
                     if rtype not in ("user", "assistant"):
                         continue
 
-                    touched = True
-                    if session_first is None:
-                        session_first = dt
-                    session_last = dt
-
                     msg = record.get("message", {})
                     content = msg.get("content", "")
+                    # 先按原始 block 结构判定 tool_use/tool_result（拍平成文本前）
+                    blocks = content if isinstance(content, list) else []
+                    block_types = {b.get("type") for b in blocks if isinstance(b, dict)}
+                    session_events.append({
+                        "t": dt, "typ": rtype,
+                        "tool_use": "tool_use" in block_types,
+                        "tool_result": "tool_result" in block_types,
+                    })
+
                     if isinstance(content, list):
-                        content = " ".join(c.get("text", "") for c in content if c.get("type") == "text")
+                        content = " ".join(b.get("text", "") for b in blocks
+                                           if isinstance(b, dict) and b.get("type") == "text")
 
                     if rtype == "user":
-                        # 用户消息最能表达"今天做了什么"，尽量少截断地保留
+                        # 用户消息最能表达“今天做了什么”，尽量少截断地保留
                         text = (content or "").strip()
                         if text and not text.startswith("<"):  # 跳过工具回传/系统包裹
                             bucket["requests"].append(text[:500])
@@ -117,8 +224,10 @@ def get_claude_logs():
             print(f"读取文件 {jsonl_file} 失败: {e}")
             continue
 
-        if touched and session_first and session_last:
-            bucket["active_seconds"] += (session_last - session_first).total_seconds()
+        # 每个会话独立计算耗时再累加，避免不同会话间的时间空档被误计
+        think_s, tool_s = compute_ai_durations(session_events)
+        bucket["think_seconds"] += think_s
+        bucket["tool_seconds"] += tool_s
 
     # 仅保留今日有活动的项目
     active = {n: b for n, b in projects.items()
@@ -127,26 +236,28 @@ def get_claude_logs():
         print("今日暂无 Claude Code 对话记录。\n")
         return
 
-    grand = {"in": 0, "out": 0, "cache_read": 0, "cache_creation": 0, "active_seconds": 0}
+    grand = {"in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
+             "think_seconds": 0.0, "tool_seconds": 0.0}
     for name, b in sorted(active.items(), key=lambda kv: -kv[1]["out"]):
         total_tokens = b["in"] + b["out"] + b["cache_read"] + b["cache_creation"]
-        hours = b["active_seconds"] / 3600
+        ai_seconds = b["think_seconds"] + b["tool_seconds"]
         print(f"\n### 项目 {name}")
         print(f"- 助手回复数: {b['assistant_count']} 条")
         print(f"- 真实 token: 输出 {b['out']:,} / 输入 {b['in']:,} / 缓存读 {b['cache_read']:,} / 缓存写 {b['cache_creation']:,}（合计 {total_tokens:,}）")
-        print(f"- AI 活跃时长(近似): {hours:.2f} 小时（各会话时间跨度之和）")
+        print(f"- AI 机器耗时: {ai_seconds/3600:.2f} 小时（思考 {b['think_seconds']/3600:.2f} + 编码 {b['tool_seconds']/3600:.2f}，已剔除人操作时间）")
         if b["requests"]:
             print("- 今日主要请求:")
             for r in b["requests"][:25]:
                 oneline = " ".join(r.split())
                 print(f"  - {oneline[:200]}")
-        for k in ("in", "out", "cache_read", "cache_creation", "active_seconds"):
+        for k in ("in", "out", "cache_read", "cache_creation", "think_seconds", "tool_seconds"):
             grand[k] += b[k]
 
     gt = grand["in"] + grand["out"] + grand["cache_read"] + grand["cache_creation"]
+    grand_ai = grand["think_seconds"] + grand["tool_seconds"]
     print(f"\n### 今日总计（跨全部项目）")
     print(f"- 真实 token 合计: {gt:,}（输出 {grand['out']:,} / 输入 {grand['in']:,} / 缓存读 {grand['cache_read']:,} / 缓存写 {grand['cache_creation']:,}）")
-    print(f"- AI 活跃时长合计(近似): {grand['active_seconds']/3600:.2f} 小时")
+    print(f"- AI 机器耗时合计: {grand_ai/3600:.2f} 小时（思考 {grand['think_seconds']/3600:.2f} + 编码 {grand['tool_seconds']/3600:.2f}）")
     print("")
 
 def print_output_hint():

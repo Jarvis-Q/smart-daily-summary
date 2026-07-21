@@ -1,174 +1,191 @@
-# 🚀 Daily Summary Skill(每日工作摘要生成器)
-一个为 Claude Code 设计的自动化日报生成与发送工具。它将**数据采集**、**内容生成**、**审核发送**彻底解耦，支持通过斜杠指令精准控制流程，完美适配“先生成、再调整、后发送”的真实工作习惯。
+# Daily Summary（每日工作摘要生成器）
 
-## ✨ 核心特性
-- **🎯 指令级解耦**：
-    - /daily-summary：专注采集与生成，不阻塞、不自动发送。
-    - /daily-summary:send：一键发送最新日报，或指定历史文件发送。
-- **📊 真实用量统计**：直接从 Claude Code 的 jsonl 日志汇总**真实 token 用量**（输入/输出/缓存）与**活跃时长**，按项目分组，不再靠 AI 估算。
-- **🧠 隐性工作捕获**：强制交互询问“沟通/卡点/知识沉淀”，避免纯代码统计遗漏关键产出。
-- **🛡️ 鲁棒性采集**：
-    - 自动检测 Git 仓库，非仓库环境优雅降级。
-    - 时间戳统一转本地时区后再按"今天"过滤，避免跨午夜错桶。
-    - 增强正则解析，兼容 任务 1: / 任务一： 等多种 AI 生成变体。
-- **🔒 出网脱敏**：发送前对疑似密钥/令牌做保守脱敏，仅发送 AI 撰写的摘要，不上传原始对话。
-- **🚀 管道自动化**：支持 `cat file | send_report.py` 模式，非交互环境下自动跳过确认，适配 CI/CD 或快捷指令。
+一个为 Claude Code 设计的日报生成与上报插件。把**数据采集**、**内容生成**、**审核发送**彻底解耦，
+适配「先生成、再调整、后发送」的真实工作习惯。
 
-## 📂 目录结构
-> 仓库根目录本身即 skill 目录，安装时整体复制为 `.claude/skills/daily-summary`。
-```text
-smart-daily-summary/            # 仓库根 = skill 目录
-├── SKILL.md                    # 技能描述与执行分支
-├── README.md                   # 本说明文档
-├── config.json                 # 服务器配置与 Payload 模板
-├── .env                        # 私有密钥（需自建，已 gitignore）
-├── requirements.txt            # Python 依赖
-└── scripts/
-    ├── gather_data.py          # 仅数据采集（Git 提交 + Claude 对话/用量）
-    └── send_report.py          # 仅解析日报、组装 Payload 与 HTTP 发送
-```
-##  安装指南
+## 命令
 
-### 1. 克隆或复制文件
-将本仓库整体复制为你项目（或用户目录）下的 `.claude/skills/daily-summary`：
+| 命令                           | 作用                                                      |
+|:---------------------------- |:------------------------------------------------------- |
+| `/daily-summary:generate`    | 采集 Git 提交与 Claude Code 对话，询问隐性工作，生成日报 Markdown（**不发送**） |
+| `/daily-summary:send`        | 发送最新一份日报到私有服务器                                          |
+| `/daily-summary:send <文件路径>` | 发送指定日报（补发历史日报时用）                                        |
+
+> 本插件是 `plugin:skill` 形态，命令**没有**裸的 `/daily-summary`——这是 Claude Code 插件的固有形式，
+> 冒号前是插件名、冒号后是 skill 名。
+
+## 核心特性
+
+- **真实用量统计**：直接从 Claude Code 的 jsonl 日志汇总**真实 token 用量**（输入/输出/缓存）与
+  活跃时长，按项目分组，不靠 AI 估算。
+- **隐性工作捕获**：强制询问「沟通/卡点/知识沉淀」，避免纯代码统计遗漏关键产出。
+- **生成与发送分离**：生成不会自动出网；发送是独立命令，内容可先人工过目。
+- **出网脱敏**：发送前对疑似密钥/令牌做保守脱敏，只发送 AI 撰写的摘要，不上传原始对话。
+- **鲁棒采集**：非 Git 仓库优雅降级；时间戳统一转本地时区后再按「今天」过滤，避免跨午夜错桶。
+
+---
+
+## 安装
+
+### 前置：Python 依赖
 
 ```bash
-# 在目标项目根目录下执行
-mkdir -p .claude/skills
-cp -r /path/to/smart-daily-summary .claude/skills/daily-summary
+pip3 install -r requirements.txt
 ```
 
-### 2. 安装 Python 依赖
+（依赖 `requests` 与 `python-dotenv`。`python-dotenv` 缺失时脚本不会崩，但读不到 `.env`。）
+
+### 方式一：从私有 GitLab 安装（推荐给团队成员）
+
+在 Claude Code 中执行：
+
+```text
+/plugin marketplace add <私有 GitLab 仓库地址>
+/plugin install daily-summary@yuntai
+```
+
+安装后**重启 Claude Code**，`/daily-summary:generate` 与 `/daily-summary:send` 即出现在补全列表中。
+
+### 方式二：本地目录安装（开发/调试）
+
+```text
+/plugin marketplace add ~/.claude/local-plugins
+/plugin install daily-summary@yuntai
+```
+
+或启动时临时挂载：
+
 ```bash
-pip install -r requirements.txt
+claude --plugin-dir ~/.claude/local-plugins/plugins/daily-summary
 ```
 
-### 3. 配置环境变量
-在daily-summary目录创建 .env 文件（务必确保 .env 已加入 .gitignore）：
+---
+
+## 配置（每人必做）
+
+### 1. 凭证：创建 `.env`
+
+`.env` **不在仓库里**（已 gitignore），需自行创建：
+
+```bash
+cd <插件目录>
+cp .env.example .env
+```
+
+然后填入真实值：
+
 ```text
-DAILY_SUMMARY_TOKEN=你的真实API_Token
+SERVER_URL=https://内部服务器/api/worklog     # 向团队负责人索取
+DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 ```
 
-### 4. 配置服务器与 Payload 模板
-编辑 .claude/skills/daily-summary/config.json：
-```json
-{
-  "server": {
-    "url": "https://your-api.com/worklog",
-    "method": "POST",
-    "headers": {
-      "${Authorization}": "${DAILY_SUMMARY_TOKEN}",
-      "Content-Type": "application/json"
-    }
-  },
-  "local_output_dir": "~/Documents/WorkLogs",
-  "task_item_template": {
-    "hours": "{{hours}}",
-    "ai_hours": "{{ai_hours}}",
-    "tokens": "{{token_consume}}",
-    "detail": "{{content}}"
-  },
-  "payload_template": {
-    "report_date": "{{date}}",
-    "tasks": "{{tasks}}"
-  }
-}
-```
-**注意**: task_item_template & payload_template 字典的 `{key}` 请按照实际配置。
-> 💡 提示：使用 ${ENV_VAR} 语法引用环境变量，脚本会自动从 .env 或系统环境中解析。
+> 插件通过 marketplace 安装后位于 `~/.claude/plugins/cache/yuntai/daily-summary/<版本>/`，
+> `.env` 要放在该目录下（与 `config.json` 同级）。
+> **注意**：插件升级会换版本目录，`.env` 需要重新放置。
 
-### 5. 配置日志路径（可选）
-脚本默认从 `~/.claude/projects/` 读取 Claude Code 对话日志。若你的日志不在该默认路径，请编辑 `scripts/gather_data.py` 中 `get_claude_logs()` 内的 `log_dir` 变量为实际路径。
+### 2. 个人配置：编辑 `config.json`
 
-## 🚀 快速开始
-### 1. 生成日报（仅采集与生成）
-在 Claude Code 中输入：
+仓库里的 `config.json` **不含密钥**（用 `${SERVER_URL}` / `${DAILY_SUMMARY_TOKEN}` 占位符从 `.env` 解析），
+但有两项**因人而异**，安装后请按需修改：
+
+| 字段                             | 说明                                          |
+|:------------------------------ |:------------------------------------------- |
+| `local_output_dir`             | 日报落盘目录，默认 `~/{your_local_dir}/worklog/`，脚本会自动创建 |
+| `task_item_template.projectId` | 上报所属项目 ID，**请替换为你自己的**，否则工时会记到别人项目下         |
+
+`payload_template` 与 `task_item_template` 的字段名需与服务端接口一致，一般不用改。
+
+---
+
+## 使用
+
+### 生成日报
+
 ```text
-/daily-summary
+/daily-summary:generate
 ```
-#### 执行流程：
-1. 脚本自动运行，输出今日 Git 提交、按项目分组的 Claude 对话摘要，以及**从 jsonl 汇总的真实 token 用量与活跃时长**。
-2. AI 暂停并询问你今天的沟通、卡点、知识沉淀。
-3. 结合数据生成结构化 Markdown，保存到脚本输出的"日报保存位置"路径（形如 `<local_output_dir>/daily-summary-YYYY-MM-DD.md`，脚本已预建目录）。
-4. 流程结束，你可以随时在编辑器中微调各任务的耗时/Token 分摊（总量已锚定真实值）。
 
-### 2. 发送最新日报
-确认内容无误后，输入：
-在 Claude Code 中输入：
+流程：脚本输出今日 Git 提交、按项目分组的对话摘要与真实用量 → AI 询问你的沟通/卡点/知识沉淀 →
+生成结构化 Markdown 存到 `local_output_dir`。生成后可自行在编辑器微调各任务的耗时分摊
+（总量已锚定真实值，只做重新分配）。
+
+### 发送
+
 ```text
-/daily-summary:send
-```
-#### 执行流程：
-1. 自动定位 ~/Documents/WorkLogs/ 下最新的日报文件。
-2. 解析任务块，组装 Payload，推送到服务器。
-3. 反馈发送结果（成功/失败/解析错误）。
-
-### 3. 发送指定历史日报
-如果需要补发或重发某天的日报：
-```text
-/daily-summary:send ~/Documents/WorkLogs/daily-summary-2026-07-01.md
+/daily-summary:send                                          # 发最新一份
+/daily-summary:send ~/{your_local_dir}/worklog/daily-summary-2026-07-01.md   # 发指定文件
 ```
 
-## 📝 日报格式规范
-AI 生成的日报必须严格遵守以下格式，否则 `send_report.py` 解析会失败。
-`AI 辅助耗时` 与 `Token 消耗量` 取自脚本汇总的真实数据，多任务时按投入比例分摊、各任务之和等于当日真实合计：
+> `:send` 无参时按**文件名字典序**取最新（不是修改时间）。刚补写的历史日报不会被自动选中，
+> 必须显式传路径。
+
+---
+
+## 日报格式规范
+
+`send_report.py` 用正则解析，格式错了会解析失败：
 
 ```markdown
-### 任务 1: [修复登录页 Bug] (预估总耗时: 2.5小时)
+### 任务 1: 修复登录页 Bug (预估总耗时: 2.5小时)
 - AI 辅助耗时: 1.5 小时
 - Token 消耗量: 4500 tokens
 - 工作详情:
   - 定位到 AuthProvider 状态丢失问题
   - 补充单元测试覆盖边缘场景
 
-### 任务 2: [跨部门需求对齐] (预估总耗时: 1小时)
+### 任务 2: 跨部门需求对齐 (预估总耗时: 1小时)
 - AI 辅助耗时: 0 小时
 - Token 消耗量: 0 tokens
 - 工作详情:
   - 与产品确认 v2.0 数据口径变更
-
 ```
 
-> 🔒 安全：日报正文会发往私有服务器。医疗语境下**严禁写入患者标识/密钥/令牌**，只写"做了什么"。发送脚本会在出网前对疑似凭证二次脱敏兜底。
+### 服务端硬约束（务必遵守）
 
-## 🔧 手动发送（稍后发送模式）
-如果你选择了“稍后发送”，或者想重新发送已修改的日报：
+- **单个任务的 `预估总耗时` 必须在 `0.5 ~ 4` 小时之间（含两端）**。服务端逐项校验，
+  任一任务越界即整单打回（不是跳过该项）：
+  - 小于 0.5 → `工作耗时最少0.5小时`
+  - 大于 4 → `工作耗时不能大于4小时`
+- 因此拆分粒度要卡在区间内：零碎工作**向上合并**，大块工作**按真实子结构向下拆分**
+  （如「基础实现」/「集成收口」），不要为凑数字虚报。
+- **`AI 辅助耗时` 与 `Token 消耗量` 可以为 0**，**`AI 辅助耗时`必须在 `0 ~ 4` 小时之间（含两端）**不受此约束——会议、卡点等隐性工作正常填 0。
+- 每日任务数与总工时无上限，只卡单项区间。
+
+> **安全**：日报正文会发往私有服务器。医疗语境下**严禁**写入患者姓名/病历号/手机号/身份证号，
+> 以及任何密钥、令牌。只写「做了什么」。发送脚本会在出网前对疑似凭证二次脱敏兜底，但那是兜底、不是许可。
+
+---
+
+## 手动调用脚本（不经 Claude Code）
+
 ```bash
-# 发送最新日报（无参 → 自动定位 local_output_dir 下最新日报）
-python3 .claude/skills/daily-summary/scripts/send_report.py
+P=~/.claude/plugins/cache/yuntai/daily-summary/<版本>   # 本地开发则为 ~/.claude/local-plugins/plugins/daily-summary
 
-# 发送指定文件
-python3 .claude/skills/daily-summary/scripts/send_report.py ~/Documents/WorkLogs/daily-summary-2026-07-01.md
-
-# 仍兼容管道传入
-cat ~/Documents/WorkLogs/daily-summary-2026-07-01.md | \
-python3 .claude/skills/daily-summary/scripts/send_report.py
-```
-> ⚠️ 注意：通过管道（|）或未连接终端触发时，脚本会自动跳过 y/n 确认环节，直接发送。
-
-## 🐛 常见问题排查
-| 问题现象 | 可能原因 | 解决方案 |
-| :--- | :--- | :--- |
-| `❌ 发送失败：未能解析出任何任务块` | Markdown 格式被 AI 修改 | 检查标题是否为 `### 任务 X: [名称]`，括号内字段名是否完整 |
-| `⚠️ 当前目录非 Git 仓库` | 在非项目目录触发 | 正常现象，脚本会跳过代码采集，仅基于对话生成 |
-| `今日暂无 Claude Code 对话记录` | 时间戳格式不匹配 | 检查 `~/.claude/projects/` 下日志是否存在，脚本已兼容 ISO8601 |
-| `❌ 发送失败：未配置 server.url` | 缺少配置文件 | 检查 `config.json` 是否存在且 `server.url` 字段非空 |
-
-## 🛠️ 开发/调试
-```bash
-# 仅测试数据采集（不发送，不生成文件）
-python3 .claude/skills/daily-summary/scripts/gather_data.py
-
-# 测试发送（通过管道传入内容）
-echo "### 任务 1: [测试任务] (预估总耗时: 1小时)
-- AI 辅助耗时: 1 小时
-- Token 消耗量: 100 tokens
-- 工作详情:
-  - 测试内容" | python3 .claude/skills/daily-summary/scripts/send_report.py
+python3 $P/scripts/gather_data.py                       # 仅采集，不发送、不落盘
+python3 $P/scripts/send_report.py                       # 发最新
+python3 $P/scripts/send_report.py <文件路径>             # 发指定
+cat <文件> | python3 $P/scripts/send_report.py          # 管道传入
 ```
 
-## 贡献与反馈
-欢迎提交 Issue 或 Pull Request 来完善这个 Skill！如果你在使用过程中发现了更好的 Prompt 或数据提取逻辑，请随时分享。
+> **注意**：管道传入或未连接终端时，脚本会**跳过 y/n 确认直接发送**（`sys.stdin.isatty()` 判断）。
 
-## 📄 开源协议
-[MIT License](./LICENSE)
+---
+
+## 常见问题
+
+| 现象                                   | 原因               | 解决                                                                |
+|:------------------------------------ |:---------------- |:----------------------------------------------------------------- |
+| `工作耗时最少0.5小时` / `工作耗时不能大于4小时`        | 某个任务的 `预估总耗时` 越界 | 按上述约束合并或拆分任务；注意是**整单**打回                                          |
+| `发送失败：未能解析出任何任务块`                    | 标题格式被改动          | 检查是否为 `### 任务 X: 名称 (预估总耗时: X小时)`                                 |
+| `发送失败：未在 config.json 中配置 server.url` | `.env` 未创建或未被读到  | 确认 `.env` 与 `config.json` 同级；确认已装 `python-dotenv`                 |
+| 看不到失败原因                              | 输出被过滤掉了          | 用白名单过滤：`grep -E '"code"\|"msg"\|发送成功\|发送失败'`，别用 `grep -v '^\s*"'` |
+| `当前目录非 Git 仓库`                       | 在非项目目录触发         | 正常，跳过代码采集，仅基于对话生成                                                 |
+| `今日暂无 Claude Code 对话记录`              | 日志路径不符           | 脚本默认读 `~/.claude/projects/`，如有变更需改 `gather_data.py` 的 `log_dir`   |
+| 升级插件后发送失败                            | 新版本目录下没有 `.env`  | 重新放置 `.env`                                                       |
+
+## 已知限制
+
+- `gather_data.py` 的日期**写死为今天**（`date.today()` + `git log --since=midnight`），不支持指定日期。
+  补发历史日报需复制脚本改日期来源，详见 `skills/generate/SKILL.md` 的「补发历史日报」章节。
+- Git 采集**仅覆盖当前工作目录所在仓库**；Claude 对话记录覆盖全部项目。
+- 重复提交同一 `workDate` 的服务端行为未知（覆盖或新增记录不明），已发送的日报勿随意重发。
