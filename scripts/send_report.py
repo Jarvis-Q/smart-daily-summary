@@ -111,6 +111,10 @@ def parse_tasks_from_markdown(markdown_content):
     for chunk in chunks:
         chunk = chunk.strip()
         if not chunk: continue
+        # 前瞻 split 的首个分片是"任务 1 之前的内容"（日报标题/项目行/分隔线等）。
+        # 它匹配不到"预估总耗时"，会以 workHours=0 混入任务列表，触发服务端
+        # "工作耗时最少0.5小时"校验而整单发送失败。此处按标题特征剔除非任务分片。
+        if not re.match(r'###\s*任务\s*[\d一二三四五六七八九十]+\s*[:：]', chunk): continue
 
         first_line = chunk.split('\n')[0]
         hours_match = re.search(r'预估总耗时\s*[:：]\s*([\d.]+)', first_line)
@@ -149,9 +153,15 @@ def send_to_server(markdown_content, report_date=None):
     report_date 为日报日期（YYYY-MM-DD），缺省用今天。"""
     config = resolve_env_vars(load_config())
     server_cfg = config.get("server", {})
-    url = server_cfg.get("url")
+    # url = server_cfg.get("url")
+    server_cfg = replace_placeholders(copy.deepcopy(server_cfg), {
+        "url": os.getenv("SERVER_URL")
+    })
+    server_cfg["headers"] = replace_placeholders(copy.deepcopy(server_cfg.get("headers", {})), {
+        "X-Api-Key": os.getenv("DAILY_SUMMARY_TOKEN"),
+    })
 
-    if not url:
+    if not server_cfg.get("url"):
         return " 发送失败：未在 config.json 中配置 server.url"
 
     # 0. 发送前脱敏：仅把 AI 撰写的摘要发往服务器，且对疑似凭证做保守脱敏
@@ -174,7 +184,6 @@ def send_to_server(markdown_content, report_date=None):
         "tasks": structured_tasks,
         "date": report_date or date.today().isoformat()
     })
-
     # 4. 发送前确认（预览）
     print(f" 共解析到 {len(tasks)} 个独立任务，已打包至 Payload。")
     print("️ 即将发送以下 Payload 到服务器:")
@@ -195,13 +204,13 @@ def send_to_server(markdown_content, report_date=None):
         try:
             print(f" 正在发送 (第 {attempt} 次尝试)...")
             response = requests.request(
-                method=server_cfg.get("method", "POST"), url=url,
+                method=server_cfg.get("method", "POST"), url=server_cfg.get("url"),
                 headers=server_cfg.get("headers", {}), json=final_payload, timeout=10
             )
-            if response.ok:
+            if response.ok and response.json().get("code") == 200:
                 return f" 发送成功！状态码: {response.status_code}"
             else:
-                print(f"️ 服务器返回异常: {response.status_code}")
+                print(f"️ 服务器返回异常: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
         except Exception as e:
             print(f"️ 网络异常: {str(e)}")
 
