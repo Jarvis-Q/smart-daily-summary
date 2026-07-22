@@ -7,7 +7,7 @@
       "X-Api-Key": "${DAILY_SUMMARY_TOKEN}"
     }
   },
-  "local_output_dir": "your local dir",
+  "local_output_dir": "~/Documents/芸泰/worklog/",
   "extra_git_dirs": [],
   "payload_template": {
     "workDate": "{{date}}",

@@ -90,7 +90,7 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 
 | 字段                             | 说明                                          |
 |:------------------------------ |:------------------------------------------- |
-| `local_output_dir`             | 日报落盘目录，默认 `~/{your_local_dir}/worklog/`，脚本会自动创建 |
+| `local_output_dir`             | 日报落盘目录，默认 `~/Documents/芸泰/worklog/`，脚本会自动创建 |
 | `task_item_template.projectId` | 上报所属项目 ID，**请替换为你自己的**，否则工时会记到别人项目下         |
 
 `payload_template` 与 `task_item_template` 的字段名需与服务端接口一致，一般不用改。
@@ -113,7 +113,7 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 
 ```text
 /daily-summary:send                                          # 发最新一份
-/daily-summary:send ~/{your_local_dir}/worklog/daily-summary-2026-07-01.md   # 发指定文件
+/daily-summary:send ~/Documents/芸泰/worklog/daily-summary-2026-07-01.md   # 发指定文件
 ```
 
 > `:send` 无参时按**文件名字典序**取最新（不是修改时间）。刚补写的历史日报不会被自动选中，

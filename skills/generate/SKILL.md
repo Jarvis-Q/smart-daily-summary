@@ -12,11 +12,13 @@ description: 当用户要求"生成日报"、"总结今天工作"、"daily summa
 
 1. **数据采集**：运行插件根目录下的采集脚本
    ```bash
-   python3 <插件根>/scripts/gather_data.py
+   python3 <插件根>/scripts/gather_data.py          # 默认今天
+   python3 <插件根>/scripts/gather_data.py day=2     # 补采昨天（day=N 即回退 N-1 天）
    ```
-   该脚本仅采集、不发送。它会**自动发现今日所有工作过的目录**（从 Claude 会话的 cwd + config
+   该脚本仅采集、不发送。它会**自动发现当日所有工作过的目录**（从 Claude 会话的 cwd + config
    的 `extra_git_dirs` 兜底），逐个 Git 仓库采集提交，**当天在任意一个目录跑一次即可覆盖全天全部
    工作**，无需每个目录重复执行。脚本缺失、无 Git 仓库或目录不存在时优雅降级。
+   `day` 参数决定采集哪一天（`day=1` 今天、`day=2` 昨天…），输出文件名随目标日变化，补发历史不会重名。
 
    > **`<插件根>` 怎么取**：本 skill 加载时，harness 会注入一行
    > `Base directory for this skill: <插件根>/skills/generate`，**其上两级即插件根**。
@@ -41,16 +43,18 @@ description: 当用户要求"生成日报"、"总结今天工作"、"daily summa
 
 ## 补发历史日报
 
-`gather_data.py` 的日期写死为今天（`date.today()` + `git log --since=midnight`），**不支持指定日期**。
-需要补发历史某天时，不要修改本脚本，而是复制一份到临时目录，仅替换日期来源后运行：
-- `TARGET = date.fromisoformat(sys.argv[1])`
-- `discover_work_dirs(...)` 的 `target_date` 传 `TARGET`（多目录发现按目标日过滤 cwd）
-- 每个仓库的 git 改为 `--since=<日期> 00:00 --until=<日期> 23:59:59`
-- jsonl 的今日过滤（`dt.date() != today`）与文件名同样改用 `TARGET`
+`gather_data.py` 已内置 `day` 参数，**直接指定天数即可**，无需再复制临时脚本：
 
-改造后**先用今天的日期与原脚本对跑一次**，两者输出一致再用于历史采集，确保 token/耗时仍是真实汇总而非估算。
-注意：复制到别处后 `load_config()` 按 `__file__` 的上级目录找 `config.json` 会失效，
-"日报保存位置"与 `extra_git_dirs` 兜底目录都会读不到，需自行从 `config.json` 拼出路径/目录。
+```bash
+python3 <插件根>/scripts/gather_data.py day=2     # 昨天
+python3 <插件根>/scripts/gather_data.py day=3     # 前天
+```
+
+`day=N` 换算为「今天回退 N-1 天」（`day=1` 今天、`day=2` 昨天…，`day<1` 报错）。多目录发现、
+Git 采集（自动改用目标日的 `--since=<日期> 00:00:00 --until=<日期> 23:59:59`）、jsonl 过滤与
+输出文件名全部按目标日走，token/AI 耗时仍是 jsonl 真实汇总而非估算，补发历史与今天的日报文件名天然不重名。
+
+跨零点场景尤其有用：凌晨补写前一天日报时用 `day=2`，避免把刚过午夜的空数据当成"今天"。
 
 ## 安全护栏（务必遵守）
 

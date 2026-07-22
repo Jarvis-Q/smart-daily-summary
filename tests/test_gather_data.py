@@ -108,6 +108,40 @@ class TestDiscoverWorkDirs(unittest.TestCase):
             self.assertIn(str(Path("~/manual/repo").expanduser()), dirs)
 
 
+class TestResolveTargetDate(unittest.TestCase):
+    """day 参数语义：day=1 今天，day=2 昨天，day=N 即今天回退 N-1 天。"""
+
+    def test_day_one_is_today(self):
+        self.assertEqual(gd.resolve_target_date(1), date.today())
+
+    def test_day_two_is_yesterday(self):
+        self.assertEqual(gd.resolve_target_date(2), date.today() - timedelta(days=1))
+
+    def test_day_n_goes_back_n_minus_one_days(self):
+        self.assertEqual(gd.resolve_target_date(5), date.today() - timedelta(days=4))
+
+    def test_day_below_one_is_invalid(self):
+        with self.assertRaises(ValueError):
+            gd.resolve_target_date(0)
+
+
+class TestParseDayArg(unittest.TestCase):
+    """从命令行参数解析 day=N；缺省为 1（今天），值非法则报错。"""
+
+    def test_defaults_to_one_when_absent(self):
+        self.assertEqual(gd.parse_day_arg(["gather_data.py"]), 1)
+
+    def test_parses_day_equals_value(self):
+        self.assertEqual(gd.parse_day_arg(["gather_data.py", "day=2"]), 2)
+
+    def test_ignores_other_args_and_finds_day(self):
+        self.assertEqual(gd.parse_day_arg(["gather_data.py", "foo", "day=3", "bar"]), 3)
+
+    def test_non_integer_value_raises(self):
+        with self.assertRaises(ValueError):
+            gd.parse_day_arg(["gather_data.py", "day=abc"])
+
+
 @unittest.skipUnless(shutil.which("git"), "需要 git 才能测试仓库归一")
 class TestResolveRepoRoots(unittest.TestCase):
     """把工作目录归一到 git 仓库根并去重，跳过非 git / 不存在的目录。"""
