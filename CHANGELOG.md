@@ -1,5 +1,36 @@
 # 变更记录
 
+## 1.2.0 —— 2026-07-22：采集脚本支持 `day` 参数，补发历史无需临时脚本
+
+**起因**：跨零点时（凌晨补写前一天日报）`date.today()` 已翻到今天，直接跑只采到刚过午夜的空数据，
+昨天一整天的工作反而被 `dt.date() != today` 滤掉；旧的补发办法要复制脚本到临时目录手改日期，繁琐易错。
+
+### 新增（`scripts/gather_data.py`，均以 TDD 落地，见 `tests/test_gather_data.py`）
+
+| 函数 | 作用 |
+| :--- | :--- |
+| `resolve_target_date(day)` | 把 `day` 换算为目标日期：`day=1` 今天、`day=2` 昨天、`day=N` 即今天回退 N-1 天；`day<1` 抛 `ValueError` |
+| `parse_day_arg(argv)` | 从命令行解析 `day=N`，缺省 `1`；`day=` 后为非整数时抛 `ValueError`（拼写错误不被静默当成今天） |
+
+### 修改
+
+- **`get_git_commits` / `get_claude_logs` / `print_output_hint`**：由内部写死 `date.today()`
+  改为接收 `target_date` 参数贯穿传递。Git 采集从 `--since=midnight` 改为
+  `--since=<目标日> 00:00:00 --until=<目标日> 23:59:59`，可精确框定历史某天；输出文件名随目标日变化，补发不重名。
+- **`main`**：解析 `day` → 计算目标日 → 表头打印 `采集日: YYYY-MM-DD（day=N，昨天）`；
+  入口对非法 `day` 给出友好提示并 `exit(2)`，不再抛裸 traceback。
+- **`skills/generate/SKILL.md`**：「补发历史日报」章节从「复制临时脚本手改日期」改写为「直接 `day=N`」。
+
+### 用法
+
+```bash
+python3 scripts/gather_data.py          # 今天（等价 day=1）
+python3 scripts/gather_data.py day=2     # 昨天
+python3 scripts/gather_data.py day=3     # 前天
+```
+
+---
+
 ## 1.1.0 —— 2026-07-22：一次采集覆盖全天多目录 + 耗时口径升级
 
 **起因**：一天在多个工程目录工作时，旧版 git 采集只看当前 shell 所在仓库（`Path.cwd()`），
