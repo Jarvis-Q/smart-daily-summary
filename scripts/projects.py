@@ -8,11 +8,14 @@
 #   - 异常信息不回显完整 URL、X-Api-Key 与响应体原文
 #
 # 用法：
-#   python3 projects.py refresh            # 拉取全量并写入缓存
-#   python3 projects.py search <关键词>     # 在缓存中检索，输出 JSON（至多 5 条）
-#   python3 projects.py resolve <项目名>    # 项目名转 id
+#   python3 projects.py refresh               # 拉取全量并写入缓存
+#   python3 projects.py search <关键词>        # 在缓存中检索，输出 JSON（至多 5 条，高频优先）
+#   python3 projects.py remote-search <关键词> # 联网刷新缓存后检索（找新项目用）
+#   python3 projects.py frequent              # 按历史发送统计的高频项目（至多 8 条，不联网）
+#   python3 projects.py resolve <项目名>       # 项目名转 id
 
 import json, os, sys, requests
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -25,7 +28,10 @@ except ImportError:
 
 # 检索结果上限：内部数据不做全量输出
 SEARCH_LIMIT = 5
+# 高频项目清单上限：供生成阶段快速挑选，不联网
+FREQUENT_LIMIT = 8
 DEFAULT_CACHE = "~/.cache/daily-summary/projects.json"
+DEFAULT_USAGE = "~/.cache/daily-summary/project-usage.json"
 
 # 响应字段名候选：服务端结构未固定，归一化时逐个尝试
 _ID_KEYS = ("id", "projectId", "project_id", "value")
@@ -34,11 +40,15 @@ _LIST_KEYS = ("data", "result", "rows", "list", "records", "items")
 
 
 def load_config():
-    """加载插件根目录的 config.json，失败时返回空字典。"""
-    path = Path(__file__).parent.parent / "config.json"
-    if path.exists():
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    """加载插件根目录的配置：优先个人 config.json（已 gitignore），
+    缺失时回退仓库自带的 config.sample.json（占位符值，仅保证结构可读）。
+    两者都缺失时返回空字典。"""
+    base = Path(__file__).resolve().parent.parent
+    for name in ("config.json", "config.sample.json"):
+        path = base / name
+        if path.exists():
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
     return {}
 
 
@@ -189,14 +199,101 @@ def load_or_fetch(config=None):
     return items
 
 
-def search_projects(keyword, items, limit=SEARCH_LIMIT):
+# ================= 使用频次统计（高频项目清单） =================
+def usage_file(config=None):
+    """频次统计文件路径。与项目缓存同目录，同样不放插件目录（插件更新会重建）。"""
+    config = config if config is not None else load_config()
+    return Path(config.get("projects_usage_path", DEFAULT_USAGE)).expanduser()
+
+
+def load_usage(path):
+    """读取频次统计：{id: {"name": str, "count": int, "last_used": "YYYY-MM-DD"}}。
+    文件缺失或损坏时返回空字典——统计只是优化项，丢了不影响任何功能。"""
+    path = Path(path).expanduser()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_usage(usage, path):
+    """写入频次统计，权限与项目缓存一致（目录 0700 / 文件 0600）。"""
+    path = Path(path).expanduser()
+    _mkdir_0700(path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump(usage, f, ensure_ascii=False)
+    os.chmod(path, 0o600)
+    return path
+
+
+def record_usage(ids, items, path=None):
+    """发送成功后累计项目使用次数。ids 为本次实际使用的项目 id 列表
+    （含回退到默认项目的情形——那同样是真实使用）；同名 id 重复出现会多次累计，
+    符合「一天内多次任务挂同一项目 = 更高频」的直觉。
+    items 为项目缓存，用于把 id 解析成可读名称快照存进统计。
+    返回更新后的统计 dict；任何 IO 异常都不应阻断发送主流程，由调用方兜底。"""
+    path = path if path is not None else usage_file()
+    usage = load_usage(path)
+    name_by_id = {it.get("id"): it.get("name", "") for it in items}
+    today = date.today().isoformat()
+    for pid in ids:
+        pid = str(pid or "").strip()
+        if not pid:
+            continue
+        entry = usage.setdefault(pid, {"name": "", "count": 0, "last_used": ""})
+        entry["count"] = int(entry.get("count", 0) or 0) + 1
+        entry["last_used"] = today
+        # 缓存里能查到就用最新名称刷新快照（服务端改名后统计仍可读）
+        if name_by_id.get(pid):
+            entry["name"] = name_by_id[pid]
+    save_usage(usage, path)
+    return usage
+
+
+def frequent_projects(usage, items, limit=FREQUENT_LIMIT):
+    """按使用统计生成高频项目清单：count 降序、last_used 降序，至多 limit 条。
+    名称优先取缓存里的最新值（缓存可能已改名），其次统计快照；两边都查不到
+    名称的条目无法展示，直接跳过。"""
+    name_by_id = {it.get("id"): it.get("name", "") for it in items}
+    # 两次稳定排序：先按 last_used 降序，再按 count 降序——
+    # count 相同条目的相对顺序由前一次排序保留，即「同频次取最近用过的」
+    ranked = sorted(usage.items(),
+                    key=lambda kv: kv[1].get("last_used", "") or "", reverse=True)
+    ranked.sort(key=lambda kv: kv[1].get("count", 0) or 0, reverse=True)
+    out = []
+    for pid, entry in ranked:
+        name = name_by_id.get(pid) or entry.get("name", "")
+        if not name:
+            continue
+        out.append({"id": pid, "name": name, "count": entry.get("count", 0)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def search_projects(keyword, items, limit=SEARCH_LIMIT, usage=None):
     """按关键词检索项目名或 id，结果上限 limit 条。空关键词也受同一上限约束，
-    确保任何路径都不会输出全量列表。"""
+    确保任何路径都不会输出全量列表。
+    传入 usage（record_usage 的统计 dict）时，命中结果按使用频次降序排列，
+    让常用项目排在前面；同频次的保持缓存原有顺序（稳定排序）。"""
     kw = (keyword or "").strip().lower()
     if not kw:
-        return items[:limit]
-    return [it for it in items
-            if kw in it.get("name", "").lower() or kw in it.get("id", "")][:limit]
+        matched = items[:limit]
+    else:
+        matched = [it for it in items
+                   if kw in it.get("name", "").lower() or kw in it.get("id", "")][:limit]
+    if usage:
+        matched = sorted(
+            matched,
+            key=lambda it: (usage.get(it.get("id"), {}) or {}).get("count", 0) or 0,
+            reverse=True,
+        )
+    return matched
 
 
 def resolve_project_id(name, items):
@@ -221,13 +318,32 @@ def main():
         print(f"已拉取 {len(items)} 个项目，缓存至 {path}")
     elif command == "search":
         keyword = args[1] if len(args) > 1 else ""
-        print(json.dumps(search_projects(keyword, load_or_fetch()),
+        print(json.dumps(search_projects(keyword, load_or_fetch(),
+                                         usage=load_usage(usage_file())),
+                         ensure_ascii=False))
+    elif command == "remote-search":
+        # 缓存检索不到时兜底：强制联网拉取全量（同时刷新缓存），再按关键词过滤。
+        # 服务端是否支持查询参数未知，因此拉全量后本地过滤，输出仍受 SEARCH_LIMIT 约束。
+        keyword = args[1] if len(args) > 1 else ""
+        try:
+            items = fetch_projects()
+        except RuntimeError as e:
+            print(f"远端检索失败：{e}", file=sys.stderr)
+            sys.exit(1)
+        save_cache(items, cache_file())
+        print(json.dumps(search_projects(keyword, items,
+                                         usage=load_usage(usage_file())),
+                         ensure_ascii=False))
+    elif command == "frequent":
+        # 高频清单只读本地统计与缓存，绝不联网——生成阶段的快速路径
+        print(json.dumps(frequent_projects(load_usage(usage_file()),
+                                           load_cache(cache_file())),
                          ensure_ascii=False))
     elif command == "resolve":
         name = args[1] if len(args) > 1 else ""
         print(resolve_project_id(name, load_or_fetch()))
     else:
-        print("用法：projects.py refresh | search <关键词> | resolve <项目名>")
+        print("用法：projects.py refresh | search <关键词> | remote-search <关键词> | frequent | resolve <项目名>")
         sys.exit(1)
 
 

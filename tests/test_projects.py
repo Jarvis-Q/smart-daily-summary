@@ -250,5 +250,122 @@ class TestFetchProjects(unittest.TestCase):
         self.assertNotIn("fake-token", message)
 
 
+class TestUsageStats(unittest.TestCase):
+    """使用频次统计：record_usage 累计、frequent 排序、search 频次优先。"""
+
+    def _usage_path(self, tmp):
+        return Path(tmp) / "sub" / "project-usage.json"
+
+    def test_record_usage_increments_and_stamps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._usage_path(tmp)
+            pj.record_usage(["1000000000000000001", "1000000000000000001",
+                             "1000000000000000002"], FAKE_ITEMS, path=path)
+            usage = pj.load_usage(path)
+            self.assertEqual(usage["1000000000000000001"]["count"], 2)
+            self.assertEqual(usage["1000000000000000002"]["count"], 1)
+            # 名称快照来自缓存
+            self.assertEqual(usage["1000000000000000001"]["name"], "测试项目甲")
+            self.assertTrue(usage["1000000000000000001"]["last_used"])
+
+    def test_record_usage_skips_empty_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._usage_path(tmp)
+            usage = pj.record_usage(["", "  ", None], FAKE_ITEMS, path=path)
+            self.assertEqual(usage, {})
+
+    def test_usage_file_permission_is_0600(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._usage_path(tmp)
+            pj.record_usage(["1000000000000000001"], FAKE_ITEMS, path=path)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_load_usage_tolerates_corrupt_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._usage_path(tmp)
+            path.parent.mkdir(parents=True)
+            path.write_text("{ 不是合法 JSON", encoding="utf-8")
+            self.assertEqual(pj.load_usage(path), {})
+
+    def test_frequent_orders_by_count_then_recency(self):
+        usage = {
+            "1": {"name": "甲", "count": 2, "last_used": "2026-10-01"},
+            "2": {"name": "乙", "count": 5, "last_used": "2026-09-01"},
+            "3": {"name": "丙", "count": 2, "last_used": "2026-10-10"},
+        }
+        got = pj.frequent_projects(usage, [])
+        # 乙(5 次) 最前；丙、甲同为 2 次，丙最近用过排在甲前
+        self.assertEqual([x["id"] for x in got], ["2", "3", "1"])
+
+    def test_frequent_caps_at_limit_and_skips_nameless(self):
+        usage = {str(i): {"name": f"项目{i}", "count": i, "last_used": "2026-10-01"}
+                 for i in range(20)}
+        usage["x"] = {"name": "", "count": 99, "last_used": "2026-10-01"}  # 无名，跳过
+        got = pj.frequent_projects(usage, [])
+        self.assertEqual(len(got), pj.FREQUENT_LIMIT)
+        self.assertNotIn("x", [x["id"] for x in got])
+        self.assertEqual(got[0]["id"], "19")  # count 最大
+
+    def test_frequent_prefers_fresh_name_from_cache(self):
+        usage = {"1": {"name": "旧名字", "count": 1, "last_used": "2026-10-01"}}
+        items = [{"id": "1", "name": "新名字"}]
+        got = pj.frequent_projects(usage, items)
+        self.assertEqual(got[0]["name"], "新名字")
+
+    def test_search_boosts_frequent_matches(self):
+        items = [
+            {"id": "1", "name": "测试项目甲"},
+            {"id": "2", "name": "测试项目乙"},
+            {"id": "3", "name": "测试项目丙"},
+        ]
+        usage = {"3": {"name": "测试项目丙", "count": 9, "last_used": "2026-10-01"}}
+        got = pj.search_projects("测试项目", items, usage=usage)
+        self.assertEqual(got[0]["id"], "3")
+        self.assertEqual([x["id"] for x in got[1:]], ["1", "2"])  # 其余保持原序
+
+    def test_search_without_usage_keeps_order(self):
+        # 「示例平台丙」不含「测试项目」，命中的是甲、乙两条，顺序与缓存一致
+        got = pj.search_projects("测试项目", FAKE_ITEMS)
+        self.assertEqual([x["id"] for x in got],
+                         ["1000000000000000001", "1000000000000000002"])
+
+
+class TestRemoteSearch(unittest.TestCase):
+    """remote-search：强制联网刷新缓存后过滤；失败时非零退出且不写缓存。"""
+
+    def _run_main(self, argv):
+        from io import StringIO
+        out = StringIO()
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(sys, "stdout", out):
+            pj.main()
+        return out.getvalue()
+
+    def test_remote_search_refreshes_cache_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "projects.json"
+            with mock.patch.object(pj, "cache_file", return_value=path), \
+                 mock.patch.object(pj, "usage_file", return_value=Path(tmp) / "u.json"), \
+                 mock.patch.object(pj, "fetch_projects", return_value=FAKE_ITEMS) as fetch:
+                out = self._run_main(["projects.py", "remote-search", "示例"])
+            fetch.assert_called_once()
+            self.assertEqual(pj.load_cache(path), FAKE_ITEMS)  # 缓存已刷新
+            got = json.loads(out)
+            self.assertEqual(got, [FAKE_ITEMS[2]])  # 只命中「示例平台丙」
+
+    def test_remote_search_failure_exits_without_cache_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "projects.json"
+            with mock.patch.object(pj, "cache_file", return_value=path), \
+                 mock.patch.object(pj, "fetch_projects",
+                                   side_effect=RuntimeError("网络异常")), \
+                 mock.patch.object(sys, "argv", ["projects.py", "remote-search", "x"]), \
+                 mock.patch.object(sys, "stdout"), \
+                 self.assertRaises(SystemExit) as ctx:
+                    pj.main()
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertFalse(path.exists())  # 失败不得落盘半截缓存
+
+
 if __name__ == "__main__":
     unittest.main()

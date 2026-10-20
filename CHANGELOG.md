@@ -1,5 +1,36 @@
 # 变更记录
 
+## [1.4.0] - 2026-10-20
+
+### 新增
+- **适配 Codex**：新增 `.agents/skills/daily-summary-generate` 与
+  `.agents/skills/daily-summary-send`（Codex skill 标准格式），安装脚本
+  `scripts/install_codex.sh` 将其软链到用户级 skill 根目录 `~/.agents/skills/`
+- **Codex 会话采集** `scripts/gather_codex.py`：解析 `~/.codex/sessions` 的
+  rollout jsonl，汇总真实 token（`token_usage_record` 优先，旧版回退
+  `token_count.last_token_usage`）、AI 机器耗时（与 cc-usage 同口径）、
+  会话数与交互轮次；采集脚本相应拆分为 `gather_common.py` / `gather_claude.py` /
+  `gather_codex.py`，`gather_data.py` 只做编排合并
+- **高频项目清单**：发送成功后自动累计各项目使用频次（本地
+  `~/.cache/daily-summary/project-usage.json`，0600）；新增
+  `projects.py frequent`（不联网，至多 8 条）与 `projects.py remote-search <关键词>`
+  （联网刷新缓存后匹配）；`search` 结果按使用频次优先排序
+- 用量输出新增「会话数 / 交互轮次」维度（Claude 与 Codex 两端分别统计并给出合计）
+- `config.json` 新增可选配置项 `codex_sessions_dir` 与 `projects_usage_path`
+
+### 变更
+- 采集输出分「Claude Code 对话与用量」「Codex 对话与用量」两节，末尾给出跨端合计；
+  Git 工作目录发现扩展为 Claude cwd ∪ Codex cwd ∪ `extra_git_dirs`
+- 生成日报时的项目选择流程改为三级：高频清单 → 缓存关键词检索 → 远端检索
+- 各脚本的 `load_config` 支持在个人 `config.json` 缺失时回退读取仓库自带的
+  `config.sample.json`（`config.json` 已 gitignore，新成员 cp 示例后自行填写）
+
+### 兼容性
+- `gather_data.py` 保留 `compute_ai_durations` / `discover_work_dirs` 等旧导出名；
+  未安装/未使用 Codex 时行为与旧版一致（Codex 节显示"暂无记录"）
+
+---
+
 ## [1.3.0] - 2026-07-29
 
 ### 新增

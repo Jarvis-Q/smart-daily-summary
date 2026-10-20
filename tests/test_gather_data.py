@@ -101,11 +101,11 @@ class TestDiscoverWorkDirs(unittest.TestCase):
             self.assertEqual(dirs, {"/repo/a", "/repo/b"})
 
     def test_merges_extra_git_dirs(self):
-        target = date(2026, 7, 21)
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)  # 空 projects：无 Claude 活动
-            dirs = gd.discover_work_dirs(root, target, extra_dirs=["~/manual/repo"])
-            self.assertIn(str(Path("~/manual/repo").expanduser()), dirs)
+        # extra_git_dirs 的合入已由编排层（gather_data.merge_work_dirs）负责
+        dirs = gd.merge_work_dirs({"/repo/a"}, extra_dirs=["~/manual/repo", ""])
+        self.assertIn("/repo/a", dirs)
+        self.assertIn(str(Path("~/manual/repo").expanduser()), dirs)
+        self.assertEqual(len(dirs), 2)  # 空串条目被跳过
 
 
 class TestResolveTargetDate(unittest.TestCase):

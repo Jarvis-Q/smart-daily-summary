@@ -24,11 +24,14 @@ except ImportError:
     pass
 
 def load_config():
-    """加载配置文件"""
-    config_path = Path(__file__).parent.parent / "config.json"
-    if config_path.exists():
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    """加载配置文件：优先个人 config.json（已 gitignore），
+    缺失时回退仓库自带的 config.sample.json（占位符值，仅保证结构可读）。"""
+    base = Path(__file__).resolve().parent.parent
+    for name in ("config.json", "config.sample.json"):
+        config_path = base / name
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
     return {}
 
 def load_categories():
@@ -314,6 +317,19 @@ def build_task_items(tasks, task_item_template, defaults, categories, projects_i
     return items, warnings
 
 # ================= 发送模块 =================
+def _record_project_usage(structured_tasks, projects_items):
+    """发送成功后累计各项目的使用频次（生成阶段「高频项目」清单的数据来源）。
+    projectId 键名来自 config.json 的 task_item_template；模板没有该字段时静默跳过。
+    统计写入失败（磁盘、权限等）只打印警告，绝不影响发送结果本身。"""
+    try:
+        ids = [str(it.get("projectId", "")).strip()
+               for it in structured_tasks if it.get("projectId")]
+        if ids:
+            projects.record_usage(ids, projects_items)
+    except Exception as e:
+        print(f"⚠️ 项目使用频次统计写入失败（不影响发送结果）：{e}")
+
+
 def send_to_server(markdown_content, report_date=None):
     """将结构化任务列表打包到 Payload 中，一次性发送到服务器。
     report_date 为日报日期（YYYY-MM-DD），缺省用今天。"""
@@ -380,6 +396,7 @@ def send_to_server(markdown_content, report_date=None):
                 headers=server_cfg.get("headers", {}), json=final_payload, timeout=10
             )
             if response.ok and response.json().get("code") == 200:
+                _record_project_usage(structured_tasks, projects_items)
                 return f" 发送成功！状态码: {response.status_code}"
             else:
                 print(f"️ 服务器返回异常: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")

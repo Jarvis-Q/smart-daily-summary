@@ -1,23 +1,36 @@
 # Daily Summary（每日工作摘要生成器）
 
-一个为 Claude Code 设计的日报生成与上报插件。把**数据采集**、**内容生成**、**审核发送**彻底解耦，
-适配「先生成、再调整、后发送」的真实工作习惯。
+一个同时适配 **Claude Code** 与 **Codex** 的日报生成与上报插件。把**数据采集**、**内容生成**、
+**审核发送**彻底解耦，适配「先生成、再调整、后发送」的真实工作习惯。
 
 ## 命令
 
+**Claude Code：**
+
 | 命令                           | 作用                                                      |
 |:---------------------------- |:------------------------------------------------------- |
-| `/daily-summary:generate`    | 采集 Git 提交与 Claude Code 对话，询问隐性工作，生成日报 Markdown（**不发送**） |
+| `/daily-summary:generate`    | 采集 Git 提交与 AI 对话记录，询问隐性工作，生成日报 Markdown（**不发送**）  |
 | `/daily-summary:send`        | 发送最新一份日报到私有服务器                                          |
 | `/daily-summary:send <文件路径>` | 发送指定日报（补发历史日报时用）                                        |
 
 > 本插件是 `plugin:skill` 形态，命令**没有**裸的 `/daily-summary`——这是 Claude Code 插件的固有形式，
 > 冒号前是插件名、冒号后是 skill 名。
 
+**Codex：**
+
+| 触发方式                            | 作用                       |
+|:------------------------------- |:------------------------ |
+| `$daily-summary-generate` 或直接说「生成日报」 | 同 Claude Code 的 generate |
+| `$daily-summary-send` 或直接说「发送日报」   | 同 Claude Code 的 send     |
+
 ## 核心特性
 
-- **真实用量统计**：直接从 Claude Code 的 jsonl 日志汇总**真实 token 用量**（输入/输出/缓存）与
-  活跃时长，按项目分组，不靠 AI 估算。
+- **真实用量统计**：分别从 Claude Code（`~/.claude/projects`）与 Codex
+  （`~/.codex/sessions`）的会话日志汇总**真实 token 用量**（输入/输出/缓存）与
+  活跃时长，按项目分组并给出跨端合计，不靠 AI 估算。
+- **会话维度**：新增「会话数 / 交互轮次」统计，两端分别计数并合计。
+- **高频项目速选**：按历史发送自动统计项目使用频次，生成日报时先列高频清单，
+  找不到再走缓存检索、最后才联网拉取。
 - **隐性工作捕获**：强制询问「沟通/卡点/知识沉淀」，避免纯代码统计遗漏关键产出。
 - **生成与发送分离**：生成不会自动出网；发送是独立命令，内容可先人工过目。
 - **出网脱敏**：发送前对疑似密钥/令牌做保守脱敏，只发送 AI 撰写的摘要，不上传原始对话。
@@ -58,6 +71,21 @@ pip3 install -r requirements.txt
 ```bash
 claude --plugin-dir ~/.claude/local-plugins/plugins/daily-summary
 ```
+
+### 方式三：安装到 Codex
+
+执行安装脚本（幂等，可重复跑）：
+
+```bash
+bash scripts/install_codex.sh
+```
+
+它把 `.agents/skills/` 下的两个 skill **软链**到用户级 skill 根目录 `~/.agents/skills/`
+（Codex 会自动扫描该目录；软链保证仓库更新后即时生效）。安装后重启 Codex，
+输入 `/skills` 或 `$daily-summary-generate` 即可看到。
+
+> Codex 没有插件市场概念，skill 就是其标准扩展形态（`SKILL.md` + 脚本目录）。
+> 两个端的 skill 共用同一份 `scripts/`、`config.json` 与 `.env`，配置只需做一次。
 
 ---
 
@@ -125,9 +153,11 @@ cp config.sample.json config.json
 ### 项目列表管理
 
 ```bash
-python3 scripts/projects.py refresh          # 拉取全量项目并写入缓存
-python3 scripts/projects.py search <关键词>   # 检索项目（至多返回 5 条）
-python3 scripts/projects.py resolve <项目名>  # 项目名转 id
+python3 scripts/projects.py refresh                # 拉取全量项目并写入缓存
+python3 scripts/projects.py frequent               # 高频项目清单（按历史发送统计，不联网）
+python3 scripts/projects.py search <关键词>         # 缓存检索（至多 5 条，高频优先）
+python3 scripts/projects.py remote-search <关键词>  # 联网刷新缓存后检索（找新项目用）
+python3 scripts/projects.py resolve <项目名>        # 项目名转 id
 ```
 
 接口地址由 `.env` 中的 `SERVER_URL` 推导（把路径最后一段换成 `projects`），
@@ -135,6 +165,16 @@ python3 scripts/projects.py resolve <项目名>  # 项目名转 id
 
 缓存默认落在 `~/.cache/daily-summary/projects.json`，以 `0600` 权限保存，
 放在用户目录而非插件目录——插件更新会重建目录，缓存搁那儿会被冲掉。
+
+**生成日报时的三级查找**（`/daily-summary:generate` 内置流程）：
+
+1. `frequent`：先列按历史发送统计的高频项目（至多 8 条），纯本地、不联网，最快；
+2. `search`：不合适再用关键词检索本地缓存（至多 5 条，结果按使用频次优先排序）；
+3. `remote-search`：仍找不到或确认是新项目时，联网刷新缓存后匹配。
+
+**频次统计从哪来**：每次发送成功后，`send_report.py` 自动把本次各任务实际使用的项目
+累计到 `~/.cache/daily-summary/project-usage.json`（同样 0600 权限，纯本地、不联网）。
+用得越多的项目，`frequent` 与 `search` 里排得越前。
 
 **两种读取行为不同，务必区分**：
 
@@ -156,6 +196,8 @@ python3 scripts/projects.py resolve <项目名>  # 项目名转 id
 | `defaults.project_id` | 项目缺失时的兜底 id | （示例为空，需在 `config.json` 中配置） |
 | `defaults.project_name` | 选择项目时展示的默认项名称 | （示例为空，需在 `config.json` 中配置） |
 | `projects_cache_path` | 项目缓存文件位置 | `~/.cache/daily-summary/projects.json` |
+| `projects_usage_path` | 项目使用频次统计文件位置 | `~/.cache/daily-summary/project-usage.json` |
+| `codex_sessions_dir` | Codex 会话日志根目录（日志迁移时才需改） | `~/.codex/sessions` |
 
 ---
 
@@ -222,7 +264,7 @@ python3 scripts/projects.py resolve <项目名>  # 项目名转 id
 
 ---
 
-## 手动调用脚本（不经 Claude Code）
+## 手动调用脚本（不经 AI 工具）
 
 ```bash
 P=~/.claude/plugins/cache/<marketplace>/daily-summary/<版本>   # 本地开发则为 ~/.claude/local-plugins/plugins/daily-summary
@@ -246,12 +288,16 @@ cat <文件> | python3 $P/scripts/send_report.py          # 管道传入
 | `发送失败：未在 config.json 中配置 server.url` | `.env` 未创建或未被读到  | 确认 `.env` 与 `config.json` 同级；确认已装 `python-dotenv`                 |
 | 看不到失败原因                              | 输出被过滤掉了          | 用白名单过滤：`grep -E '"code"\|"msg"\|发送成功\|发送失败'`，别用 `grep -v '^\s*"'` |
 | `当前目录非 Git 仓库`                       | 在非项目目录触发         | 正常，跳过代码采集，仅基于对话生成                                                 |
-| `今日暂无 Claude Code 对话记录`              | 日志路径不符           | 脚本默认读 `~/.claude/projects/`，如有变更需改 `gather_data.py` 的 `log_dir`   |
+| `今日暂无 Claude Code 对话记录`              | 日志路径不符           | 脚本默认读 `~/.claude/projects/`，如有变更需改 `gather_claude.py` 的 `DEFAULT_PROJECTS_ROOT` |
+| `今日暂无 Codex 会话记录`                    | 日志路径不符或当天未用 Codex | 脚本默认读 `~/.codex/sessions/`，如有变更改 `config.json` 的 `codex_sessions_dir`   |
+| Codex 里看不到 skill                       | 未安装或未重启         | 重跑 `bash scripts/install_codex.sh` 并重启 Codex；用 `/skills` 确认               |
 | 升级插件后发送失败                            | 新版本目录下没有 `.env`  | 重新放置 `.env`                                                       |
 
 ## 已知限制
 
-- Git 采集与 Claude 对话记录采集均**已支持多目录自动发现**（从当日有 Claude 活动的会话
-  `cwd` 自动发现工作目录，并可用 `config.json` 的 `extra_git_dirs` 兜底），
-  在任意一个目录跑一次即可覆盖当天全部工作目录，无需逐个切换重跑。
+- Git 采集与 AI 对话记录采集均**已支持多目录自动发现**（Claude 会话 cwd + Codex 会话
+  cwd + `config.json` 的 `extra_git_dirs` 兜底），在任意一个目录跑一次即可覆盖当天全部
+  工作目录，无需逐个切换重跑。
+- Codex 会话解析基于 Codex CLI 0.163 的 rollout jsonl 格式；Codex 升级若改格式，
+  集中在 `scripts/gather_codex.py` 适配即可。
 - 重复提交同一 `workDate` 的服务端行为未知（覆盖或新增记录不明），已发送的日报勿随意重发。

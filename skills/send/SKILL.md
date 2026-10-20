@@ -58,6 +58,9 @@ python3 <插件根>/scripts/send_report.py <文件路径>
 > 因此首次使用本插件前，务必先手动执行一次 `python3 <插件根>/scripts/projects.py refresh`
 > 建立缓存，否则会遇到「所有任务都归到默认项目」却看不出原因。
 
+> **发送成功后会自动累计各项目的使用频次**（写入本地 `project-usage.json`），
+> 这是生成阶段 `projects.py frequent` 高频项目清单的数据来源，纯本地统计、不额外联网。
+
 ## 执行与结果反馈
 
 运行后向用户反馈发送结果（成功/失败/解析错误）。
