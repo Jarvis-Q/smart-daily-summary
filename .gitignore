@@ -2,6 +2,18 @@
 # 新成员请复制 .env.example 为 .env 后自行填写
 .env
 
+# 个人配置：含内部项目 id、本地路径等隐私信息，绝对不可提交
+# 新成员请复制 config.sample.json 为 config.json 后自行填写
+config.json
+
+# 项目列表缓存与使用统计：公司内部数据，正常落在 ~/.cache/daily-summary/ 下，
+# 此处仅为防止误放进仓库的兜底
+data/projects*.json
+
+# superpowers 过程文档：涉及个人工作数据，不入库
+.superpowers/
+docs/superpowers/
+
 # Python
 __pycache__/
 *.py[cod]

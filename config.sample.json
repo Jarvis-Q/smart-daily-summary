@@ -9,6 +9,7 @@
   },
   "local_output_dir": "~/Documents/worklog/",
   "extra_git_dirs": [],
+  "projects_cache_path": "~/.cache/daily-summary/projects.json",
   "payload_template": {
     "workDate": "{{date}}",
     "status": "1",
@@ -16,13 +17,18 @@
     "items": "{{tasks}}"
   },
   "task_item_template": {
-    "workCategory": "dev",
-    "workDetail": "{{content}}",
+    "workCategory": "{{work_category}}",
+    "workDetail": "{{work_detail}}",
     "workHours": "{{hours}}",
     "aiHours": "{{ai_hours}}",
     "tokenConsume": "{{token_consume}}",
-    "projectId": "1000000000000000099",
+    "projectId": "{{project_id}}",
     "chandaoId": "",
     "sortOrder": 1
+  },
+  "defaults": {
+    "work_category": "dev",
+    "project_id": "",
+    "project_name": ""
   }
 }

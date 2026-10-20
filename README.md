@@ -83,17 +83,79 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 > `.env` 要放在该目录下（与 `config.json` 同级）。
 > **注意**：插件升级会换版本目录，`.env` 需要重新放置。
 
-### 2. 个人配置：编辑 `config.json`
+### 2. 个人配置：复制并编辑 `config.json`
 
-仓库里的 `config.json` **不含密钥**（用 `${SERVER_URL}` / `${DAILY_SUMMARY_TOKEN}` 占位符从 `.env` 解析），
-但有两项**因人而异**，安装后请按需修改：
+仓库只提供示例 `config.sample.json`，**`config.json` 已 gitignore、不会入库**（含内部项目 id 与本地路径）。
+首次使用请复制后修改：
+
+```bash
+cd <插件目录>
+cp config.sample.json config.json
+```
+
+`config.json` **不含密钥**（用 `${SERVER_URL}` / `${DAILY_SUMMARY_TOKEN}` 占位符从 `.env` 解析），
+但有几项**因人而异**，安装后请按需修改：
 
 | 字段                             | 说明                                          |
 |:------------------------------ |:------------------------------------------- |
 | `local_output_dir`             | 日报落盘目录，默认 `~/Documents/worklog/`，脚本会自动创建 |
 | `task_item_template.projectId` | 上报所属项目 ID，**请替换为你自己的**，否则工时会记到别人项目下         |
+| `defaults.project_id` / `defaults.project_name` | 任务缺项目时的兜底项，示例中为空，**请配置为自己的默认项目** |
 
 `payload_template` 与 `task_item_template` 的字段名需与服务端接口一致，一般不用改。
+
+### 工作分类与所属项目
+
+日报中每个任务可独立指定分类与项目，由 `/daily-summary:generate` 在生成时逐任务询问：
+
+```markdown
+### 任务 1: 重构日报发送链路 (预估总耗时: 3小时)
+- 工作分类: 开发
+- 所属项目: example-示例项目
+```
+
+- **工作分类**取值来自 `data/categories.json`（24 项）。写中文名或 code 均可解析，
+  推荐写中文名便于阅读。服务端新增分类时手工补充该文件即可。
+- **所属项目**须写项目全名，与服务端项目列表精确一致。项目列表由
+  `scripts/projects.py` 从服务端拉取并缓存到本地。
+
+两个字段缺失或取值无法识别时，会回退到 `config.json` 的 `defaults` 并打印警告，
+不影响发送——老日报无需改造即可继续使用。
+
+### 项目列表管理
+
+```bash
+python3 scripts/projects.py refresh          # 拉取全量项目并写入缓存
+python3 scripts/projects.py search <关键词>   # 检索项目（至多返回 5 条）
+python3 scripts/projects.py resolve <项目名>  # 项目名转 id
+```
+
+接口地址由 `.env` 中的 `SERVER_URL` 推导（把路径最后一段换成 `projects`），
+认证复用 `DAILY_SUMMARY_TOKEN`，无需额外配置。
+
+缓存默认落在 `~/.cache/daily-summary/projects.json`，以 `0600` 权限保存，
+放在用户目录而非插件目录——插件更新会重建目录，缓存搁那儿会被冲掉。
+
+**两种读取行为不同，务必区分**：
+
+- `search` / `resolve`：缓存不存在或为空时会**自动拉取一次**并落盘，此后一律用缓存。
+- **发送阶段（`send_report.py`）**：只被动读本地缓存文件，缓存不存在或为空时**不会**
+  自动联网拉取，而是让所有任务回退到默认项目，并为**每个任务各打印一条 `⚠️` 警告**。
+  因此**首次使用本插件前，务必先手动执行一次 `refresh` 建立缓存**，
+  否则会遇到"所有任务都归到默认项目"却查不出原因。
+
+项目有变动（新建项目搜不到）时，同样需要手动执行 `refresh` 刷新。
+
+> 项目列表属公司内部数据，仅用于日报的项目选择与发送映射，请勿转存或外发。
+
+### 新增配置项
+
+| 配置项 | 说明 | 默认值 |
+|---|---|---|
+| `defaults.work_category` | 分类缺失时的兜底 code | `dev` |
+| `defaults.project_id` | 项目缺失时的兜底 id | （示例为空，需在 `config.json` 中配置） |
+| `defaults.project_name` | 选择项目时展示的默认项名称 | （示例为空，需在 `config.json` 中配置） |
+| `projects_cache_path` | 项目缓存文件位置 | `~/.cache/daily-summary/projects.json` |
 
 ---
 
@@ -127,6 +189,8 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 
 ```markdown
 ### 任务 1: 修复登录页 Bug (预估总耗时: 2.5小时)
+- 工作分类: 修复BUG
+- 所属项目: example-示例项目
 - AI 辅助耗时: 1.5 小时
 - Token 消耗量: 4500 tokens
 - 工作详情:
@@ -134,6 +198,8 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
   - 补充单元测试覆盖边缘场景
 
 ### 任务 2: 跨部门需求对齐 (预估总耗时: 1小时)
+- 工作分类: 会议讨论
+- 所属项目: example-示例项目
 - AI 辅助耗时: 0 小时
 - Token 消耗量: 0 tokens
 - 工作详情:
@@ -148,7 +214,7 @@ DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
   - 大于 4 → `工作耗时不能大于4小时`
 - 因此拆分粒度要卡在区间内：零碎工作**向上合并**，大块工作**按真实子结构向下拆分**
   （如「基础实现」/「集成收口」），不要为凑数字虚报。
-- **`AI 辅助耗时` 与 `Token 消耗量` 可以为 0**，**`AI 辅助耗时`必须在 `0 ~ 4` 小时之间（含两端）**不受此约束——会议、卡点等隐性工作正常填 0。
+- **`AI 辅助耗时` 与 `Token 消耗量` 可以为 0，不受上述区间约束**——会议、卡点等隐性工作正常填 0。
 - 每日任务数与总工时无上限，只卡单项区间。
 
 > **安全**：日报正文会发往私有服务器。医疗语境下**严禁**写入患者姓名/病历号/手机号/身份证号，
@@ -185,7 +251,7 @@ cat <文件> | python3 $P/scripts/send_report.py          # 管道传入
 
 ## 已知限制
 
-- `gather_data.py` 的日期**写死为今天**（`date.today()` + `git log --since=midnight`），不支持指定日期。
-  补发历史日报需复制脚本改日期来源，详见 `skills/generate/SKILL.md` 的「补发历史日报」章节。
-- Git 采集**仅覆盖当前工作目录所在仓库**；Claude 对话记录覆盖全部项目。
+- Git 采集与 Claude 对话记录采集均**已支持多目录自动发现**（从当日有 Claude 活动的会话
+  `cwd` 自动发现工作目录，并可用 `config.json` 的 `extra_git_dirs` 兜底），
+  在任意一个目录跑一次即可覆盖当天全部工作目录，无需逐个切换重跑。
 - 重复提交同一 `workDate` 的服务端行为未知（覆盖或新增记录不明），已发送的日报勿随意重发。
