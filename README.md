@@ -49,28 +49,26 @@ pip3 install -r requirements.txt
 
 （依赖 `requests` 与 `python-dotenv`。`python-dotenv` 缺失时脚本不会崩，但读不到 `.env`。）
 
-### 方式一：从私有 GitLab 安装（推荐给团队成员）
+### 方式一：从私有 marketplace 安装（推荐给团队成员）
 
 在 Claude Code 中执行：
 
 ```text
-/plugin marketplace add <私有 GitLab 仓库地址>
-/plugin install daily-summary@<marketplace>
+/plugin marketplace add <私有 marketplace 仓库地址>
+/plugin install daily-summary@team-plugins
 ```
+
+> `team-plugins` 是私有 marketplace 的注册名（定义在 marketplace 仓库的 `.claude-plugin/marketplace.json`）。
+> 首次安装需先 `marketplace add` 注册市场；之后新增插件只需 `install <插件名>@team-plugins`。
 
 安装后**重启 Claude Code**，`/daily-summary:generate` 与 `/daily-summary:send` 即出现在补全列表中。
 
-### 方式二：本地目录安装（开发/调试）
+### 方式二：本地目录加载（开发/调试）
 
-```text
-/plugin marketplace add ~/.claude/local-plugins
-/plugin install daily-summary@<marketplace>
-```
-
-或启动时临时挂载：
+直接以仓库目录作为插件启动，改动即时生效，无需 marketplace：
 
 ```bash
-claude --plugin-dir ~/.claude/local-plugins/plugins/daily-summary
+claude --plugin-dir <本仓库路径>
 ```
 
 ### 方式三：安装到 Codex
@@ -108,7 +106,7 @@ SERVER_URL=https://内部服务器/api/worklog     # 向团队负责人索取
 DAILY_SUMMARY_TOKEN=你的个人Token             # 每人一份，不要共用
 ```
 
-> 插件通过 marketplace 安装后位于 `~/.claude/plugins/cache/<marketplace>/daily-summary/<版本>/`，
+> 插件通过 marketplace 安装后位于 `~/.claude/plugins/cache/team-plugins/daily-summary/<版本>/`，
 > `.env` 要放在该目录下（与 `config.json` 同级）。
 > **注意**：插件升级会换版本目录，`.env` 需要重新放置。
 
@@ -274,7 +272,7 @@ python3 scripts/projects.py resolve <项目名>        # 项目名转 id
 ## 手动调用脚本（不经 AI 工具）
 
 ```bash
-P=~/.claude/plugins/cache/<marketplace>/daily-summary/<版本>   # 本地开发则为 ~/.claude/local-plugins/plugins/daily-summary
+P=~/.claude/plugins/cache/team-plugins/daily-summary/<版本>   # 本地开发则填 <本仓库路径>
 
 python3 $P/scripts/gather_data.py                       # 仅采集，不发送、不落盘
 python3 $P/scripts/send_report.py                       # 发最新
