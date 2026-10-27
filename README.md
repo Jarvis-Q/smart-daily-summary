@@ -51,10 +51,13 @@ pip3 install -r requirements.txt
 
 ### 方式一：从私有 marketplace 安装（推荐给团队成员）
 
+> **前置（每人一次）**：内部 GitLab 的 SSH 走非标准端口 2212，需在 `~/.ssh/config` 里给
+> GitLab 域名配 `Port 2212`（scp-like 地址才能连上；`marketplace add` 不识别 `ssh://` 形式）。
+
 在 Claude Code 中执行：
 
 ```text
-/plugin marketplace add <私有 marketplace 仓库地址>
+/plugin marketplace add git@<内部GitLab域名>:marketplace/team-plugins.git
 /plugin install daily-summary@team-plugins
 ```
 
