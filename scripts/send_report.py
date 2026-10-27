@@ -135,9 +135,12 @@ def parse_report_date(source):
     return date.today().isoformat()
 
 # ================= 解析与模板替换模块 =================
+# 服务端硬约束：workDetail 不能超过 2000 字符，超长本地截断后再发送
+MAX_WORK_DETAIL = 2000
+
 # 任务块中的结构化字段行——这些值都有各自的 JSON 字段承载，不应混进 workDetail
 _FIELD_LINE = re.compile(
-    r'\s*[-*]\s*(AI\s*辅助耗时|Token\s*消耗量|工作分类|所属项目|工作详情)\s*[:：]'
+    r'\s*[-*]\s*(AI\s*辅助耗时|AI\s*请求数|Token\s*消耗量|工作分类|所属项目|工作详情)\s*[:：]'
 )
 _TASK_TITLE = re.compile(r'###\s*任务\s*[\d一二三四五六七八九十]+\s*[:：]\s*(.*)')
 # 任意级别的 Markdown 标题行，以及其中属于「### 任务 N:」形态的任务标题行
@@ -239,6 +242,9 @@ def parse_tasks_from_markdown(markdown_content):
         hours_match = re.search(r'预估总耗时\s*[:：]\s*([\d.]+)', first_line)
         ai_hours_match = re.search(r'AI 辅助耗时\s*[:：]\s*([\d.]+)', chunk)
         token_match = re.search(r'Token 消耗量\s*[:：]\s*(\d+)', chunk)
+        # 连接数（AI 请求数）：锚定行首取整数，缺失默认 0（隐性工作）
+        request_count_match = re.search(
+            r'^\s*[-*]\s*AI\s*请求数\s*[:：]\s*(\d+)', chunk, re.MULTILINE)
         # 新增字段：缺失时留空串，由组装阶段回退到 config 的 defaults 并告警
         # 必须锚定行首的字段行（列表符号后紧跟字段名），否则会误抓「工作详情」
         # 正文里含有同名关键字+冒号的自然语言描述（如"- 说明工作分类：xxx"）
@@ -249,6 +255,7 @@ def parse_tasks_from_markdown(markdown_content):
             "hours": float(hours_match.group(1)) if hours_match else 0.0,
             "ai_hours": float(ai_hours_match.group(1)) if ai_hours_match else 0.0,
             "token_consume": int(token_match.group(1)) if token_match else 0,
+            "request_count": int(request_count_match.group(1)) if request_count_match else 0,
             "work_category_raw": category_match.group(1).strip() if category_match else "",
             "project_name_raw": project_match.group(1).strip() if project_match else "",
             "work_detail": build_work_detail(chunk),
@@ -308,10 +315,21 @@ def build_task_items(tasks, task_item_template, defaults, categories, projects_i
         item = replace_placeholders(copy.deepcopy(task_item_template), {
             **task, "work_category": code, "project_id": project_id,
         })
-        # sortOrder 不走占位符：replace_placeholders 对标量一律 str()，
-        # 会把它从数字变成字符串。此处直接赋值以保持 int 类型。
+        # sortOrder / requestCount 不走占位符：replace_placeholders 对标量一律 str()，
+        # 会把它们从数字变成字符串。此处直接赋值以保持 int 类型。
         if "sortOrder" in item:
             item["sortOrder"] = index
+        if "requestCount" in item:
+            # 老日报缺「AI 请求数」行时兜底为 0，避免把占位符字面量发出去
+            item["requestCount"] = int(task.get("request_count", 0))
+        # 服务端硬约束：工作详情不能超过 2000 字符，超长本地截断后再发送
+        if "workDetail" in item and len(item["workDetail"]) > MAX_WORK_DETAIL:
+            original_len = len(item["workDetail"])
+            item["workDetail"] = item["workDetail"][:MAX_WORK_DETAIL]
+            warnings.append(
+                f"任务 {index} 的工作详情 {original_len} 字符超出 {MAX_WORK_DETAIL} 字符上限，"
+                "已截断后再发送"
+            )
         items.append(item)
 
     return items, warnings

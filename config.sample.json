@@ -22,6 +22,7 @@
     "workHours": "{{hours}}",
     "aiHours": "{{ai_hours}}",
     "tokenConsume": "{{token_consume}}",
+    "requestCount": "{{request_count}}",
     "projectId": "{{project_id}}",
     "chandaoId": "",
     "sortOrder": 1

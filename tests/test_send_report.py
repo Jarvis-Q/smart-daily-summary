@@ -68,6 +68,7 @@ class TestBuildWorkDetail(unittest.TestCase):
 - 工作分类: 开发
 - 所属项目: example-示例项目
 - AI 辅助耗时: 1.5 小时
+- AI 请求数: 12 次
 - Token 消耗量: 82000 tokens
 - 工作详情:
   - 拆分 gather_data 与 send_report 职责
@@ -85,6 +86,7 @@ class TestBuildWorkDetail(unittest.TestCase):
     def test_excludes_metric_and_field_lines(self):
         got = sr.build_work_detail(self.FULL_CHUNK)
         self.assertNotIn("AI 辅助耗时", got)
+        self.assertNotIn("AI 请求数", got)
         self.assertNotIn("Token 消耗量", got)
         self.assertNotIn("工作分类", got)
         self.assertNotIn("所属项目", got)
@@ -161,6 +163,18 @@ class TestBuildWorkDetail(unittest.TestCase):
             "混合写法\n- 总述一句\n- 子条目一\n- 子条目二",
         )
 
+    def test_request_count_line_after_detail_section_is_excluded(self):
+        # 字段行出现在「工作详情」段之后时，若不被 _FIELD_LINE 识别会被当成
+        # 普通条目收进正文——有独立 JSON 字段承载，不得混入 workDetail。
+        # 注：任何字段行都会关闭详情段（既有语义），字段行之后的条目不再收集。
+        chunk = """### 任务 6: 后置字段 (预估总耗时: 1小时)
+- 工作详情:
+  - 条目一
+- AI 请求数: 12 次"""
+        got = sr.build_work_detail(chunk)
+        self.assertEqual(got, "后置字段\n- 条目一")
+        self.assertNotIn("AI 请求数", got)
+
 
 class TestParseTasksFromMarkdown(unittest.TestCase):
     """解析新增的工作分类与所属项目字段，同时保持既有字段与非任务分片剔除逻辑。"""
@@ -171,6 +185,7 @@ class TestParseTasksFromMarkdown(unittest.TestCase):
 - 工作分类: 开发
 - 所属项目: 测试项目甲
 - AI 辅助耗时: 1.5 小时
+- AI 请求数: 12 次
 - Token 消耗量: 82000 tokens
 - 工作详情:
   - 拆分职责
@@ -184,6 +199,16 @@ class TestParseTasksFromMarkdown(unittest.TestCase):
         tasks = sr.parse_tasks_from_markdown(self.REPORT)
         self.assertEqual(tasks[0]["work_category_raw"], "开发")
         self.assertEqual(tasks[0]["project_name_raw"], "测试项目甲")
+
+    def test_extracts_request_count(self):
+        # 「AI 请求数」对应服务端 requestCount 字段，取脚本输出的项目连接数
+        tasks = sr.parse_tasks_from_markdown(self.REPORT)
+        self.assertEqual(tasks[0]["request_count"], 12)
+
+    def test_missing_request_count_defaults_to_zero(self):
+        # 老格式日报没有该行：默认 0（隐性工作正常情况），不抛异常
+        tasks = sr.parse_tasks_from_markdown(self.REPORT)
+        self.assertEqual(tasks[1]["request_count"], 0)
 
     def test_missing_fields_become_empty_string(self):
         # 老格式任务块没有这两行，应为空串而非 KeyError，由调用方回退默认值
@@ -217,6 +242,15 @@ class TestParseTasksFromMarkdown(unittest.TestCase):
         tasks = sr.parse_tasks_from_markdown(chunk)
         self.assertEqual(tasks[0]["work_category_raw"], "")
         self.assertEqual(tasks[0]["project_name_raw"], "")
+
+    def test_ignores_request_count_keyword_inside_detail_text(self):
+        # 同理：「AI 请求数」出现在详情正文中间时不是字段行，不得误抓
+        chunk = """### 任务 3: 补充说明 (预估总耗时: 1小时)
+- 工作详情:
+  - 今日 AI 请求数：这其实是详情正文，不是字段
+"""
+        tasks = sr.parse_tasks_from_markdown(chunk)
+        self.assertEqual(tasks[0]["request_count"], 0)
 
     def test_field_line_tolerates_indent_fullwidth_colon_and_star_bullet(self):
         # 带前导缩进、全角冒号、星号列表符的字段行都应能正常解析
@@ -341,6 +375,7 @@ class TestBuildTaskItems(unittest.TestCase):
         "workHours": "{{hours}}",
         "aiHours": "{{ai_hours}}",
         "tokenConsume": "{{token_consume}}",
+        "requestCount": "{{request_count}}",
         "projectId": "{{project_id}}",
         "chandaoId": "",
         "sortOrder": 1,
@@ -356,6 +391,7 @@ class TestBuildTaskItems(unittest.TestCase):
     def _task(self, **overrides):
         task = {
             "hours": 3.0, "ai_hours": 1.5, "token_consume": 82000,
+            "request_count": 12,
             "work_category_raw": "开发", "project_name_raw": "测试项目甲",
             "work_detail": "重构发送链路\n- 拆分职责", "content": "",
         }
@@ -428,6 +464,78 @@ class TestBuildTaskItems(unittest.TestCase):
         items, _ = sr.build_task_items([self._task()], template, self.DEFAULTS,
                                        self.CATEGORIES, self.PROJECTS)
         self.assertNotIn("sortOrder", items[0])
+
+    def test_request_count_is_injected_as_int(self):
+        # requestCount 必须是数字而非字符串——replace_placeholders 会把标量
+        # 变字符串，此处应像 sortOrder 一样直接赋 int
+        items, _ = self._build([self._task()])
+        self.assertEqual(items[0]["requestCount"], 12)
+        self.assertIsInstance(items[0]["requestCount"], int)
+
+    def test_legacy_task_without_request_count_defaults_to_zero(self):
+        # 老日报没有「AI 请求数」行：解析层给 0，组装层兜底为 int 0，
+        # 不能把 "{{request_count}}" 占位符字面量发出去
+        task = self._task()
+        del task["request_count"]
+        items, _ = self._build([task])
+        self.assertEqual(items[0]["requestCount"], 0)
+        self.assertIsInstance(items[0]["requestCount"], int)
+
+    def test_template_without_request_count_is_untouched(self):
+        template = {k: v for k, v in self.TEMPLATE.items() if k != "requestCount"}
+        items, _ = sr.build_task_items([self._task()], template, self.DEFAULTS,
+                                       self.CATEGORIES, self.PROJECTS)
+        self.assertNotIn("requestCount", items[0])
+
+
+class TestWorkDetailLimit(unittest.TestCase):
+    """服务端硬约束：workDetail 不能超过 2000 字符，超长本地截断并警告。"""
+
+    TEMPLATE = {"workDetail": "{{work_detail}}", "sortOrder": 1}
+    DEFAULTS = {"work_category": "dev", "project_id": "p-fallback"}
+    CATEGORIES = {"开发": "dev"}
+    PROJECTS = [{"id": "p-1", "name": "测试项目甲"}]
+
+    def _build(self, work_detail):
+        task = {
+            "hours": 1.0, "ai_hours": 0.0, "token_consume": 0, "request_count": 0,
+            "work_category_raw": "开发", "project_name_raw": "测试项目甲",
+            "work_detail": work_detail, "content": "",
+        }
+        return sr.build_task_items([task], self.TEMPLATE, self.DEFAULTS,
+                                   self.CATEGORIES, self.PROJECTS)
+
+    def test_overlong_detail_truncated_to_2000(self):
+        detail = "长" * 2500
+        items, warnings = self._build(detail)
+        self.assertEqual(len(items[0]["workDetail"]), 2000)
+        self.assertTrue(warnings)
+        self.assertIn("任务 1", warnings[0])
+        self.assertIn("2000", warnings[0])
+
+    def test_detail_exactly_at_limit_untouched(self):
+        # 恰好 2000 字符：合规，不截断、不警告
+        detail = "长" * 2000
+        items, warnings = self._build(detail)
+        self.assertEqual(len(items[0]["workDetail"]), 2000)
+        self.assertEqual(warnings, [])
+
+    def test_short_detail_untouched(self):
+        items, warnings = self._build("普通长度的详情")
+        self.assertEqual(items[0]["workDetail"], "普通长度的详情")
+        self.assertEqual(warnings, [])
+
+    def test_template_without_work_detail_untouched(self):
+        # 模板没有 workDetail 字段时不做长度处理，也不得崩溃
+        template = {"sortOrder": 1}
+        task = {
+            "hours": 1.0, "ai_hours": 0.0, "token_consume": 0, "request_count": 0,
+            "work_category_raw": "开发", "project_name_raw": "测试项目甲",
+            "work_detail": "长" * 2500, "content": "",
+        }
+        items, warnings = sr.build_task_items([task], template, self.DEFAULTS,
+                                              self.CATEGORIES, self.PROJECTS)
+        self.assertNotIn("workDetail", items[0])
 
 
 if __name__ == "__main__":
