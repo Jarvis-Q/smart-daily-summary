@@ -81,8 +81,8 @@ def _project_name(jsonl_path):
 def new_bucket():
     """单个项目（按会话目录名归组）的统计容器。"""
     return {
-        "requests": [], "assistant_count": 0, "user_turns": 0, "sessions": 0,
-        "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
+        "requests": [], "request_count": 0, "assistant_count": 0, "user_turns": 0,
+        "sessions": 0, "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
         "think_seconds": 0.0, "tool_seconds": 0.0,
     }
 
@@ -146,6 +146,7 @@ def collect(target_date, projects_root=None):
                         text = (content or "").strip()
                         if text and not text.startswith("<"):  # 跳过工具回传/系统包裹
                             bucket["requests"].append(text[:500])
+                            bucket["request_count"] += 1  # 连接数：一次真实提问即一次 AI 请求
                     else:  # assistant：累加真实 token 用量
                         bucket["assistant_count"] += 1
                         usage = msg.get("usage") or {}
@@ -177,7 +178,7 @@ def summarize(projects):
     total = new_bucket()
     total["requests"] = []  # 总计不汇总请求文本
     for b in projects.values():
-        for k in ("assistant_count", "user_turns", "sessions",
+        for k in ("request_count", "assistant_count", "user_turns", "sessions",
                   "in", "out", "cache_read", "cache_creation",
                   "think_seconds", "tool_seconds"):
             total[k] += b[k]

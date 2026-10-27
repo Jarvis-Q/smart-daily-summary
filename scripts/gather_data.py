@@ -90,7 +90,7 @@ def render_section(title, empty_hint, projects):
     for name, b in sorted(projects.items(), key=lambda kv: -kv[1]["out"]):
         ai_seconds = b["think_seconds"] + b["tool_seconds"]
         print(f"\n### 项目 {name}")
-        print(f"- 会话数: {b['sessions']} 个 / 交互轮次: {b['user_turns']} 轮 / 助手回复数: {b['assistant_count']} 条")
+        print(f"- 会话数: {b['sessions']} 个 / 交互轮次: {b['user_turns']} 轮 / 连接数: {b['request_count']} 次 / 助手回复数: {b['assistant_count']} 条")
         print(f"- 真实 token: 输出 {b['out']:,} / 输入 {b['in']:,} / 缓存读 {b['cache_read']:,} / 缓存写 {b['cache_creation']:,}（合计 {gather_claude.token_total(b):,}）")
         print(f"- AI 机器耗时: {ai_seconds/3600:.2f} 小时（思考 {b['think_seconds']/3600:.2f} + 编码 {b['tool_seconds']/3600:.2f}，已剔除人操作时间）")
         if b["requests"]:
@@ -103,7 +103,7 @@ def render_section(title, empty_hint, projects):
     st = gather_claude.token_total(sub)
     sub_ai = sub["think_seconds"] + sub["tool_seconds"]
     print(f"\n### {title}小计")
-    print(f"- 会话数: {sub['sessions']} 个 / 交互轮次: {sub['user_turns']} 轮")
+    print(f"- 会话数: {sub['sessions']} 个 / 交互轮次: {sub['user_turns']} 轮 / 连接数: {sub['request_count']} 次")
     print(f"- 真实 token 小计: {st:,}（输出 {sub['out']:,} / 输入 {sub['in']:,} / 缓存读 {sub['cache_read']:,} / 缓存写 {sub['cache_creation']:,}）")
     print(f"- AI 机器耗时小计: {sub_ai/3600:.2f} 小时（思考 {sub['think_seconds']/3600:.2f} + 编码 {sub['tool_seconds']/3600:.2f}）")
     print("")
@@ -118,7 +118,8 @@ def render_grand_total(claude_sub, codex_sub):
     print("### 今日总计（跨端合计）")
     print(f"- 会话数合计: {claude_sub['sessions'] + codex_sub['sessions']} 个"
           f"（Claude {claude_sub['sessions']} + Codex {codex_sub['sessions']}）"
-          f" / 交互轮次合计: {claude_sub['user_turns'] + codex_sub['user_turns']} 轮")
+          f" / 交互轮次合计: {claude_sub['user_turns'] + codex_sub['user_turns']} 轮"
+          f" / 连接数合计: {claude_sub['request_count'] + codex_sub['request_count']} 次")
     print(f"- 真实 token 合计: {t1 + t2:,}（Claude {t1:,} + Codex {t2:,}）")
     print(f"- AI 机器耗时合计: {ai1 + ai2:.2f} 小时（Claude {ai1:.2f} + Codex {ai2:.2f}）")
     print("")

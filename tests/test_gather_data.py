@@ -1,5 +1,7 @@
 # tests/test_gather_data.py
 # gather_data.py 核心纯函数的单元测试（标准库 unittest，零外部依赖）。
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -12,6 +14,7 @@ from pathlib import Path
 
 # 让测试能 import 同仓库 scripts 目录下的 gather_data
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import gather_claude  # noqa: E402
 import gather_data as gd  # noqa: E402
 
 
@@ -165,6 +168,76 @@ class TestResolveRepoRoots(unittest.TestCase):
             ])
             expected = os.path.realpath(repo)      # git show-toplevel 返回真实路径
             self.assertEqual(got, {expected})
+
+
+class TestRenderSection(unittest.TestCase):
+    """render_section / render_grand_total 的日志输出：连接数（AI 请求数）逐级展示。"""
+
+    def _bucket(self, request_count, out=10):
+        b = gather_claude.new_bucket()
+        b["request_count"] = request_count
+        b["out"] = out
+        return b
+
+    def _render(self, projects):
+        """跑一次 render_section 并捕获 stdout 文本。"""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gd.render_section("Claude Code 对话与用量", "暂无记录。", projects)
+        return buf.getvalue()
+
+    def test_project_line_includes_request_count(self):
+        # 项目行的统计串里必须带上「连接数: N 次」
+        out = self._render({"projA": self._bucket(2)})
+        self.assertIn("连接数: 2 次", out)
+
+    def test_subtotal_includes_request_count(self):
+        # 小计行的连接数来自 summarize 的逐项目汇总
+        out = self._render({"projA": self._bucket(2), "projB": self._bucket(3)})
+        self.assertIn("连接数: 5 次", out)
+
+    def test_grand_total_includes_request_count(self):
+        # 跨端合计也要给出连接数合计（Claude 2 + Codex 3 = 5）
+        claude_sub = gather_claude.summarize({"projA": self._bucket(2)})
+        codex_sub = gather_claude.summarize({"projB": self._bucket(3)})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gd.render_grand_total(claude_sub, codex_sub)
+        self.assertIn("连接数合计: 5 次", buf.getvalue())
+
+
+class TestCollectRequestCount(unittest.TestCase):
+    """Claude 侧采集：连接数随用户真实提问递增，工具回传/系统包裹不计。"""
+
+    def _write_jsonl(self, path, records):
+        with open(path, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+    def _rec(self, dt, cwd, typ="user", content="x"):
+        return {"type": typ, "timestamp": dt.isoformat(), "cwd": cwd,
+                "message": {"role": typ, "content": content}}
+
+    def test_request_count_matches_real_user_questions(self):
+        local_tz = datetime.now().astimezone().tzinfo
+        target = date(2026, 7, 21)
+        noon = datetime(2026, 7, 21, 12, 0, tzinfo=local_tz)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projA"
+            root.mkdir()
+            self._write_jsonl(root / "s1.jsonl", [
+                self._rec(noon, "/repo/a", "user", "第一个问题"),
+                self._rec(noon + timedelta(seconds=5), "/repo/a", "assistant", "答"),
+                # 工具回传（content 为 block 列表含 tool_result）不算提问
+                {"type": "user", "timestamp": (noon + timedelta(seconds=10)).isoformat(),
+                 "cwd": "/repo/a", "message": {"role": "user",
+                 "content": [{"type": "tool_result", "tool_use_id": "t1"}]}},
+                self._rec(noon + timedelta(seconds=15), "/repo/a", "user", "第二个问题"),
+            ])
+            data = gather_claude.collect(target, projects_root=Path(tmp))
+            b = data["projects"]["projA"]
+            self.assertEqual(len(b["requests"]), 2)
+            self.assertEqual(b["request_count"], 2)
 
 
 if __name__ == "__main__":

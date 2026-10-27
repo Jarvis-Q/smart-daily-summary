@@ -83,8 +83,8 @@ def _item_text(item):
 def new_bucket():
     """与 gather_claude.new_bucket 同构，保证汇总/渲染逻辑可复用。"""
     return {
-        "requests": [], "assistant_count": 0, "user_turns": 0, "sessions": 0,
-        "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
+        "requests": [], "request_count": 0, "assistant_count": 0, "user_turns": 0,
+        "sessions": 0, "in": 0, "out": 0, "cache_read": 0, "cache_creation": 0,
         "think_seconds": 0.0, "tool_seconds": 0.0,
     }
 
@@ -152,6 +152,7 @@ def _parse_session_file(path, target_date):
                         text = _item_text(item)
                         if text and not text.startswith("<"):  # 跳过系统包裹注入
                             bucket["requests"].append(text[:500])
+                            bucket["request_count"] += 1  # 连接数：一次真实提问即一次 AI 请求
                     elif kind == "agent" and itype == "AgentMessage":
                         bucket["assistant_count"] += 1
 
@@ -200,7 +201,7 @@ def collect(target_date, root=None, config=None):
             cwds.add(cwd)
         merged = projects.setdefault(label, new_bucket())
         merged["sessions"] += 1
-        for k in ("user_turns", "assistant_count",
+        for k in ("user_turns", "assistant_count", "request_count",
                   "in", "out", "cache_read", "cache_creation",
                   "think_seconds", "tool_seconds"):
             merged[k] += bucket[k]

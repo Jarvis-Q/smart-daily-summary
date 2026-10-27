@@ -148,6 +148,26 @@ class TestCollect(unittest.TestCase):
             data = gc.collect(TARGET, root=root)
             self.assertEqual(data["projects"]["alpha"]["requests"], ["真实问题"])
 
+    def test_request_count_matches_real_user_questions(self):
+        """连接数（AI 请求数）：两条真实提问 + 一条系统包裹，应只计 2。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "2026/07/21/rollout-a.jsonl", [
+                _meta("/repo/alpha", _ts(TARGET, 9, 0)),
+                _item(_ts(TARGET, 9, 0, 1), "UserMessage", "第一个问题"),
+                _item(_ts(TARGET, 9, 0, 2), "AgentMessage", "答"),
+                _item(_ts(TARGET, 9, 0, 3), "UserMessage", "<系统包裹>"),
+                _item(_ts(TARGET, 9, 0, 4), "UserMessage", "第二个问题"),
+            ])
+            _write(root / "2026/07/21/rollout-b.jsonl", [
+                _meta("/repo/alpha", _ts(TARGET, 10, 0)),
+                _item(_ts(TARGET, 10, 0, 1), "UserMessage", "另一会话的提问"),
+            ])
+            data = gc.collect(TARGET, root=root)
+            b = data["projects"]["alpha"]
+            self.assertEqual(len(b["requests"]), 3)
+            self.assertEqual(b["request_count"], 3)
+
     def test_old_mtime_file_skipped_fast_path(self):
         """mtime 早于目标日 00:00 的文件不解析——里面不可能有当日活动。"""
         with tempfile.TemporaryDirectory() as tmp:
